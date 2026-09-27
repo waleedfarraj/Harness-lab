@@ -8,8 +8,8 @@ import "server-only";
  * inlines them into client bundles.
  */
 
-export const DEFAULT_BASE_URL = "https://api.tokenfactory.nebius.com/v1";
-export const DEFAULT_MODEL = "nvidia/nvidia-nemotron-3-nano-30b-a3b";
+export const DEFAULT_BASE_URL = "https://api.tokenfactory.us-central1.nebius.com/v1";
+export const DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b";
 export const DEFAULT_TIMEOUT_MS = 60_000;
 
 export interface NebiusConfig {

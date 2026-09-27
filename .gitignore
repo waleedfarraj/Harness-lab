@@ -11,6 +11,9 @@ next-env.d.ts
 # testing
 /coverage
 
+# experiment evidence (local only, never committed)
+/.harnesslab/
+
 # misc
 .DS_Store
 *.pem

@@ -9,10 +9,19 @@
 export interface SandboxCreateOptions {
   /** Human-readable label for logs, e.g. an experiment arm id. */
   label?: string;
+  /** Local-runner-specific: canonical fixture directory to seed the workspace from. */
+  fixturePath?: string;
 }
 
 export interface SandboxHandle {
   id: string;
+  /**
+   * Absolute local filesystem path backing this sandbox, for runners that
+   * are themselves local-filesystem-based (e.g. LocalExperimentRunner).
+   * Undefined for runners with no local filesystem view, such as a future
+   * Token Factory Sandbox adapter.
+   */
+  root?: string;
 }
 
 export interface SandboxCommand {
@@ -28,6 +37,8 @@ export interface SandboxExecResult {
   stdout: string;
   stderr: string;
   durationMs: number;
+  /** True if the command was killed for exceeding its timeout. */
+  timedOut?: boolean;
 }
 
 export interface SandboxRunner {

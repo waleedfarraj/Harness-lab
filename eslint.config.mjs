@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // fixtures/ is a self-contained experiment fixture, not app code; it is
+    // typechecked and linted by the experiment runner using its own config.
+    "fixtures/**",
   ]),
 ]);
 

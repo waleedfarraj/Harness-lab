@@ -43,13 +43,12 @@ cp .env.example .env.local
 #    NEBIUS_API_KEY=<your key from https://tokenfactory.nebius.com>
 ${EDITOR:-nano} .env.local
 
-# 4. (Optional) Change the endpoint or model in .env.local. Defaults:
-#    NEBIUS_BASE_URL=https://api.tokenfactory.nebius.com/v1
-#    NEBIUS_MODEL=nvidia/nvidia-nemotron-3-nano-30b-a3b
-#    Use any Nemotron model ID your account can access
-#    (for example nvidia/nemotron-3-super-120b-a12b).
-#    If your account uses a regional endpoint, set NEBIUS_BASE_URL to it
-#    (for example https://api.tokenfactory.us-central1.nebius.com/v1).
+# 4. (Optional) Change the endpoint or model in .env.local. Defaults (verified live):
+#    NEBIUS_BASE_URL=https://api.tokenfactory.us-central1.nebius.com/v1
+#    NEBIUS_MODEL=nvidia/nemotron-3-super-120b-a12b
+#    Use any Nemotron model ID your account can access.
+#    nvidia/nvidia-nemotron-3-nano-30b-a3b returned HTTP 404 (model not found)
+#    when live-tested against this endpoint; it is not a working default.
 
 # 5. Start the dev server
 npm run dev
@@ -66,8 +65,8 @@ curl -s -X POST http://localhost:3000/api/nemotron/test \
 | Variable | Required | Default |
 | --- | --- | --- |
 | `NEBIUS_API_KEY` | yes | none |
-| `NEBIUS_BASE_URL` | no | `https://api.tokenfactory.nebius.com/v1` |
-| `NEBIUS_MODEL` | no | `nvidia/nvidia-nemotron-3-nano-30b-a3b` |
+| `NEBIUS_BASE_URL` | no | `https://api.tokenfactory.us-central1.nebius.com/v1` |
+| `NEBIUS_MODEL` | no | `nvidia/nemotron-3-super-120b-a12b` |
 | `NEBIUS_TIMEOUT_MS` | no | `60000` |
 
 The config is checked on every request. If the key is missing, the base URL is not `https`, or the timeout is not a positive integer, the endpoint returns HTTP 500 with `code: "config_missing"` and a message that names the variable at fault.
@@ -81,7 +80,7 @@ Success (200):
 ```json
 {
   "success": true,
-  "model": "nvidia/nvidia-nemotron-3-nano-30b-a3b",
+  "model": "nvidia/nemotron-3-super-120b-a12b",
   "output": "...",
   "latencyMs": 1234,
   "finishReason": "stop",
