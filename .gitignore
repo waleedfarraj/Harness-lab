@@ -1,0 +1,22 @@
+# dependencies
+/node_modules
+
+# next.js
+/.next/
+/out/
+/build
+next-env.d.ts
+*.tsbuildinfo
+
+# testing
+/coverage
+
+# misc
+.DS_Store
+*.pem
+npm-debug.log*
+
+# Secrets: every .env* file is ignored; only the placeholder template is tracked.
+.env
+.env.*
+!.env.example
