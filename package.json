@@ -10,7 +10,11 @@
     "typecheck": "tsc --noEmit",
     "test": "node --conditions=react-server --import tsx --test tests/*.test.ts",
     "check:secrets": "node scripts/check-client-bundle.mjs",
-    "experiment:smoke": "node --conditions=react-server --env-file=.env.local --import tsx scripts/experiment-smoke.ts"
+    "experiment:smoke": "node --conditions=react-server --env-file=.env.local --import tsx scripts/experiment-smoke.ts",
+    "experiment:compare": "node --conditions=react-server --env-file=.env.local --import tsx scripts/experiment-compare.ts",
+    "experiment:interaction": "node --conditions=react-server --env-file=.env.local --import tsx scripts/experiment-interaction.ts",
+    "sandbox:smoke": "node --env-file=.env.local scripts/sandbox-smoke.mjs",
+    "sandbox:branch-spike": "node --env-file=.env.local scripts/sandbox-branch-spike.mjs"
   },
   "dependencies": {
     "next": "16.3.6",

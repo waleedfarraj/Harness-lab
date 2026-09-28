@@ -1,7 +1,7 @@
 import "server-only";
 
-import fs from "node:fs";
 import path from "node:path";
+import { readLocalFile } from "../../agent/local-fs";
 import { diffChangedFiles, runCheckCommand, wasCommandExecuted } from "../evaluator";
 import type { CodingTask } from "../types";
 
@@ -27,23 +27,21 @@ export const paymentRetryTask: CodingTask = {
   ].join("\n"),
   fixturePath: "fixtures/payment-retry",
   allowedCommands: [TEST_COMMAND, BUILD_COMMAND],
-  maxTurns: 8,
   commandTimeoutMs: 30_000,
   experimentTimeoutMs: 5 * 60_000,
   evaluator: async (ctx) => {
-    const workspaceRoot = ctx.sandbox.root;
-    if (!workspaceRoot) throw new Error("payment-retry evaluator requires a local sandbox root");
-
     const build = await runCheckCommand(ctx.runner, ctx.sandbox, "npm", ["run", "build"]);
     const publicTests = await runCheckCommand(ctx.runner, ctx.sandbox, "npm", ["test"]);
 
     // Capture evidence of the agent's own changes before adding the hidden test file.
-    const changedFiles = diffChangedFiles(ctx.fixtureRoot, workspaceRoot);
+    const changedFiles = await diffChangedFiles(ctx.runner, ctx.sandbox, ctx.fixtureRoot);
     const diffResult = await runCheckCommand(ctx.runner, ctx.sandbox, "git", ["diff", "--no-color"]);
 
-    const hiddenSource = path.join(ctx.fixtureRoot, "hidden", "paymentRetry.hidden.test.ts");
-    const hiddenDest = path.join(workspaceRoot, "tests", "paymentRetry.hidden.test.ts");
-    fs.copyFileSync(hiddenSource, hiddenDest);
+    // Injected via the runner (not direct fs), so this also works against a remote Sandbox
+    // checkpoint. The hidden test's content only ever comes from local disk — HarnessLab
+    // reads its own canonical fixture, the agent never sees it before this point.
+    const hiddenContent = readLocalFile(ctx.fixtureRoot, path.join("hidden", "paymentRetry.hidden.test.ts"));
+    await ctx.runner.writeFile(ctx.sandbox, "tests/paymentRetry.hidden.test.ts", hiddenContent);
     const combined = await runCheckCommand(ctx.runner, ctx.sandbox, "npm", ["test"]);
 
     return {

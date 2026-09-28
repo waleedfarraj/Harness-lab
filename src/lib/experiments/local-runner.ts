@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { listLocalFiles, readLocalFile, writeLocalFile } from "../agent/local-fs";
 import { FIXTURE_COPY_ENTRIES } from "./fixture-copy";
 import type { SandboxCommand, SandboxCreateOptions, SandboxExecResult, SandboxHandle, SandboxRunner } from "../sandbox/types";
 
@@ -103,6 +104,21 @@ export class LocalExperimentRunner implements SandboxRunner {
         },
       );
     });
+  }
+
+  async listFiles(sandbox: SandboxHandle, dir: string): Promise<string[]> {
+    if (!sandbox.root) throw new Error("LocalExperimentRunner.listFiles: sandbox handle has no local root");
+    return listLocalFiles(sandbox.root, dir);
+  }
+
+  async readFile(sandbox: SandboxHandle, relPath: string): Promise<string> {
+    if (!sandbox.root) throw new Error("LocalExperimentRunner.readFile: sandbox handle has no local root");
+    return readLocalFile(sandbox.root, relPath);
+  }
+
+  async writeFile(sandbox: SandboxHandle, relPath: string, content: string): Promise<void> {
+    if (!sandbox.root) throw new Error("LocalExperimentRunner.writeFile: sandbox handle has no local root");
+    writeLocalFile(sandbox.root, relPath, content);
   }
 
   async destroy(sandbox: SandboxHandle): Promise<void> {

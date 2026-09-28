@@ -5,5 +5,10 @@
   "scripts": {
     "test": "node --import tsx --test tests/*.test.ts",
     "build": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "tsx": "^4",
+    "typescript": "^5"
   }
 }

@@ -4,25 +4,28 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { runCodingAgent } from "../agent/coding-agent";
 import { buildToolDefinitions, createToolExecutor } from "../agent/tools";
+import type { HarnessManifest } from "../harness/types";
+import { validateHarnessManifest } from "../harness/validate";
+import { createSandboxRunner, resolveRunnerKind } from "../sandbox/runner-config";
 import { writeRunEvidence } from "./evidence";
-import { LocalExperimentRunner } from "./local-runner";
 import type { CodingTask, ExperimentResult } from "./types";
 
-const DEFAULT_MAX_TURNS = 8;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 const DEFAULT_EXPERIMENT_TIMEOUT_MS = 5 * 60_000;
 
 /**
- * Runs one coding task end to end: fresh workspace from the canonical
- * fixture -> bounded agent tool loop -> deterministic evaluation -> evidence
- * written to disk -> workspace destroyed. This is the one primitive
- * Milestone 1 proves; no comparisons, no repeated trials.
+ * Runs one coding task, under one explicit HarnessManifest, end to end:
+ * fresh workspace from the canonical fixture -> bounded agent tool loop
+ * (model/systemPrompt/maxTurns all from `manifest`) -> deterministic
+ * evaluation -> evidence written to disk -> workspace destroyed.
  */
-export async function runExperiment(task: CodingTask): Promise<ExperimentResult> {
+export async function runExperiment(task: CodingTask, manifest: HarnessManifest): Promise<ExperimentResult> {
+  validateHarnessManifest(manifest);
   const runId = crypto.randomUUID();
-  const runner = new LocalExperimentRunner();
+  const runnerKind = resolveRunnerKind();
+  const runner = createSandboxRunner();
   const fixtureRoot = path.resolve(task.fixturePath);
-  const sandbox = await runner.create({ label: task.id, fixturePath: task.fixturePath });
+  const sandbox = await runner.create({ label: `${task.id}-${manifest.id}`, fixturePath: task.fixturePath });
   const startedAt = performance.now();
 
   try {
@@ -36,10 +39,12 @@ export async function runExperiment(task: CodingTask): Promise<ExperimentResult>
     });
 
     const trajectory = await runCodingAgent({
+      model: manifest.model,
+      systemPrompt: manifest.systemPrompt,
       instruction: task.instruction,
       toolDefinitions,
       executeTool,
-      maxTurns: task.maxTurns ?? DEFAULT_MAX_TURNS,
+      maxTurns: manifest.execution.maxTurns,
       signal,
     });
 
@@ -53,7 +58,9 @@ export async function runExperiment(task: CodingTask): Promise<ExperimentResult>
     const result: ExperimentResult = {
       runId,
       taskId: task.id,
+      manifestId: manifest.id,
       success,
+      terminationReason: trajectory.stopReason,
       evaluation: outcome.evaluation,
       changedFiles: outcome.changedFiles,
       metrics: {
@@ -68,7 +75,7 @@ export async function runExperiment(task: CodingTask): Promise<ExperimentResult>
         trajectory,
         diff: outcome.diff,
         evaluatorRaw: outcome.raw,
-        stopReason: trajectory.stopReason,
+        sandbox: { runner: runnerKind, handleId: sandbox.id, metadata: sandbox.metadata },
       },
     };
 

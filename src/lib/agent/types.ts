@@ -31,6 +31,16 @@ export interface AgentToolCallRecord {
   ok: boolean;
   /** Short, truncated summary of the tool result (not the full payload). */
   resultSummary: string;
+  /** Actual character length of the content sent back to the model (before evidence truncation), i.e. what future turns pay to resend. */
+  resultChars: number;
+}
+
+/** Token/size accounting for one request to the model, to explain where cost comes from. */
+export interface AgentRequestMeta {
+  /** Number of messages in the conversation sent on this request (system + user + all prior turns). */
+  messageCount: number;
+  /** Approximate serialized size of the request body, in characters. */
+  serializedSizeChars: number;
 }
 
 export interface AgentTurnRecord {
@@ -41,14 +51,25 @@ export interface AgentTurnRecord {
   startedAt: string;
   durationMs: number;
   usage: { inputTokens: number | null; outputTokens: number | null; totalTokens: number | null } | null;
+  request: AgentRequestMeta;
 }
 
-export type AgentStopReason = "completed" | "max_turns" | "timeout" | "error";
+/**
+ * Why the agent loop stopped. "completed" and "max_turns" are the two
+ * ordinary outcomes; "timeout"/"provider_error"/"tool_error" mean the loop
+ * ended early because something broke, not because the agent finished or
+ * ran out of turns. This matters for diagnosis: a FAIL from "max_turns"
+ * means the agent was still working; a FAIL from "provider_error" means
+ * HarnessLab never got a fair look at the agent's ability on this turn.
+ */
+export type AgentTerminationReason = "completed" | "max_turns" | "timeout" | "tool_error" | "provider_error";
 
 export interface AgentTrajectory {
   turns: AgentTurnRecord[];
   toolCallCount: number;
-  stopReason: AgentStopReason;
+  stopReason: AgentTerminationReason;
+  /** Human-readable detail for non-"completed"/"max_turns" stops (e.g. the provider error message). Null otherwise. */
+  terminationDetail: string | null;
   finalAssistantMessage: string | null;
   totalUsage: { inputTokens: number; outputTokens: number; totalTokens: number };
 }

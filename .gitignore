@@ -19,6 +19,11 @@ next-env.d.ts
 *.pem
 npm-debug.log*
 
+# Python (only used for the Token Factory Sandboxes bridge)
+.venv-sandbox/
+__pycache__/
+*.pyc
+
 # Secrets: every .env* file is ignored; only the placeholder template is tracked.
 .env
 .env.*

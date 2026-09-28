@@ -4,6 +4,7 @@
 //
 // This makes a REAL Token Factory call. Run it deliberately, not in a loop.
 import path from "node:path";
+import { baselineV1 } from "../src/lib/harness/manifests/baseline-v1";
 import { runExperiment } from "../src/lib/experiments/run-experiment";
 import { paymentRetryTask } from "../src/lib/experiments/tasks/payment-retry";
 
@@ -11,7 +12,7 @@ async function main() {
   console.log("HarnessLab Experiment\n");
   console.log(`Task: ${paymentRetryTask.id}`);
 
-  const result = await runExperiment(paymentRetryTask);
+  const result = await runExperiment(paymentRetryTask, baselineV1);
   const model = result.evidence.trajectory.turns[0]?.model ?? "unknown";
 
   console.log(`Model: ${model}\n`);

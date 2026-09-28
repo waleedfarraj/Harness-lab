@@ -2,7 +2,7 @@ import "server-only";
 
 import { NebiusError } from "../nebius/client";
 import { ConfigError, loadNebiusConfig, type NebiusConfig } from "../nebius/config";
-import type { AgentStopReason, AgentToolCallRecord, AgentTrajectory, AgentTurnRecord, ToolDefinition, ToolExecutor } from "./types";
+import type { AgentTerminationReason, AgentToolCallRecord, AgentTrajectory, AgentTurnRecord, ToolDefinition, ToolExecutor } from "./types";
 
 /**
  * A small, bounded tool-calling loop against Nemotron Super via Token
@@ -10,15 +10,11 @@ import type { AgentStopReason, AgentToolCallRecord, AgentTrajectory, AgentTurnRe
  * deliberately separate from `runNemotron()` (the Milestone 0 smoke test):
  * that one sends a single prompt and returns text; this one drives a
  * multi-turn conversation with function/tool calls.
+ *
+ * `model` and `systemPrompt` are required, explicit inputs (from a
+ * HarnessManifest), not hidden constants here — that's what makes two
+ * harness configurations comparable.
  */
-
-const SYSTEM_PROMPT = [
-  "You are a careful senior software engineer working inside a small, isolated Git repository.",
-  "You can only interact with the repository through the provided tools.",
-  "Read the relevant files first, then make the smallest correct change.",
-  "Run the tests before you consider the task finished.",
-  "When you are satisfied the task is complete, reply with a short plain-text summary and do not call any more tools.",
-].join(" ");
 
 const MAX_OUTPUT_TOKENS_PER_TURN = 1024;
 
@@ -36,13 +32,17 @@ interface OpenAiMessage {
 }
 
 export interface RunCodingAgentOptions {
+  /** Which model to request. Explicit — from a HarnessManifest, never a hidden default. */
+  model: string;
+  /** The system message. Explicit — from a HarnessManifest, never a hidden default. */
+  systemPrompt: string;
   instruction: string;
   toolDefinitions: ToolDefinition[];
   executeTool: ToolExecutor;
   maxTurns: number;
   /** Overall wall-clock budget for the whole loop, independent of the per-request timeout. */
   signal?: AbortSignal;
-  /** Injected for tests; defaults to process.env-based config. */
+  /** Injected for tests; defaults to process.env-based config (apiKey/baseUrl/timeoutMs only — model comes from `options.model`). */
   config?: NebiusConfig;
   /** Injected for tests; defaults to the global fetch. */
   fetchImpl?: typeof fetch;
@@ -64,19 +64,21 @@ export async function runCodingAgent(options: RunCodingAgentOptions): Promise<Ag
   }));
 
   const messages: OpenAiMessage[] = [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: options.systemPrompt },
     { role: "user", content: options.instruction },
   ];
 
   const turns: AgentTurnRecord[] = [];
   let toolCallCount = 0;
-  let stopReason: AgentStopReason = "max_turns";
+  let stopReason: AgentTerminationReason = "max_turns";
+  let terminationDetail: string | null = null;
   let finalAssistantMessage: string | null = null;
   const totalUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
 
-  for (let turn = 1; turn <= options.maxTurns; turn++) {
+  turnLoop: for (let turn = 1; turn <= options.maxTurns; turn++) {
     if (options.signal?.aborted) {
       stopReason = "timeout";
+      terminationDetail = "Experiment wall-clock timeout exceeded";
       break;
     }
 
@@ -85,6 +87,17 @@ export async function runCodingAgent(options: RunCodingAgentOptions): Promise<Ag
     const requestSignal = options.signal
       ? AbortSignal.any([options.signal, AbortSignal.timeout(config.timeoutMs)])
       : AbortSignal.timeout(config.timeoutMs);
+
+    const requestMessageCount = messages.length;
+    const requestBody = {
+      model: options.model,
+      messages,
+      tools: openAiTools,
+      tool_choice: "auto",
+      max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
+    };
+    const serializedBody = JSON.stringify(requestBody);
+    const requestMeta = { messageCount: requestMessageCount, serializedSizeChars: serializedBody.length };
 
     let response: Response;
     try {
@@ -95,33 +108,34 @@ export async function runCodingAgent(options: RunCodingAgentOptions): Promise<Ag
           "Content-Type": "application/json",
           Accept: "application/json",
         },
-        body: JSON.stringify({
-          model: config.model,
-          messages,
-          tools: openAiTools,
-          tool_choice: "auto",
-          max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
-        }),
+        body: serializedBody,
         signal: requestSignal,
         cache: "no-store",
       });
     } catch (err) {
       if (options.signal?.aborted) {
         stopReason = "timeout";
+        terminationDetail = "Experiment wall-clock timeout exceeded";
         break;
       }
       if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
-        throw new NebiusError("timeout", `Token Factory did not respond within ${config.timeoutMs} ms`);
+        stopReason = "timeout";
+        terminationDetail = `Token Factory did not respond within ${config.timeoutMs} ms`;
+        break;
       }
-      throw new NebiusError("network_error", "Could not reach Token Factory (network error)");
+      stopReason = "provider_error";
+      terminationDetail = "Could not reach Token Factory (network error)";
+      break;
     }
 
     const body: unknown = await response.json().catch(() => null);
     if (!response.ok) {
-      if (response.status === 401 || response.status === 403) {
-        throw new NebiusError("auth_failed", `Token Factory rejected the request (HTTP ${response.status})`, response.status);
-      }
-      throw new NebiusError("provider_error", `Token Factory returned HTTP ${response.status}`, response.status);
+      stopReason = "provider_error";
+      terminationDetail =
+        response.status === 401 || response.status === 403
+          ? `Token Factory rejected the request as unauthorized (HTTP ${response.status})`
+          : `Token Factory returned HTTP ${response.status}`;
+      break;
     }
 
     const data = asRecord(body);
@@ -156,12 +170,13 @@ export async function runCodingAgent(options: RunCodingAgentOptions): Promise<Ag
       finalAssistantMessage = assistantContent;
       turns.push({
         turn,
-        model: typeof data?.model === "string" ? data.model : config.model,
+        model: typeof data?.model === "string" ? data.model : options.model,
         assistantContent,
         toolCalls: [],
         startedAt: startedAt.toISOString(),
         durationMs: Math.round(performance.now() - started),
         usage: turnUsage,
+        request: requestMeta,
       });
       stopReason = "completed";
       break;
@@ -177,9 +192,20 @@ export async function runCodingAgent(options: RunCodingAgentOptions): Promise<Ag
         parseError = "invalid JSON arguments";
       }
 
-      const result = parseError
-        ? { ok: false, content: `error: ${parseError}` }
-        : await options.executeTool({ name: call.function.name, arguments: args });
+      let result: { ok: boolean; content: string };
+      if (parseError) {
+        result = { ok: false, content: `error: ${parseError}` };
+      } else {
+        try {
+          result = await options.executeTool({ name: call.function.name, arguments: args });
+        } catch (err) {
+          // The tool layer catches its own expected failures (bad path, disallowed command, etc.)
+          // and returns { ok: false }; reaching here means the executor itself broke unexpectedly.
+          stopReason = "tool_error";
+          terminationDetail = err instanceof Error ? err.message : "tool executor threw an unexpected error";
+          break turnLoop;
+        }
+      }
 
       messages.push({ role: "tool", tool_call_id: call.id, content: result.content });
       toolCallRecords.push({
@@ -188,21 +214,23 @@ export async function runCodingAgent(options: RunCodingAgentOptions): Promise<Ag
         arguments: redactArgsForEvidence(call.function.name, args),
         ok: result.ok,
         resultSummary: result.content.length > 500 ? `${result.content.slice(0, 500)}...` : result.content,
+        resultChars: result.content.length,
       });
     }
 
     turns.push({
       turn,
-      model: typeof data?.model === "string" ? data.model : config.model,
+      model: typeof data?.model === "string" ? data.model : options.model,
       assistantContent,
       toolCalls: toolCallRecords,
       startedAt: startedAt.toISOString(),
       durationMs: Math.round(performance.now() - started),
       usage: turnUsage,
+      request: requestMeta,
     });
   }
 
-  return { turns, toolCallCount, stopReason, finalAssistantMessage, totalUsage };
+  return { turns, toolCallCount, stopReason, terminationDetail, finalAssistantMessage, totalUsage };
 }
 
 /** Keeps evidence small and never lets a write_file's full content ride along in the trajectory log. */

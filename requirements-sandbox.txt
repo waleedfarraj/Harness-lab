@@ -1,0 +1,6 @@
+# Only needed for HARNESSLAB_RUNNER=token-factory (Nebius Token Factory Sandboxes beta).
+# Install into a virtualenv, not system Python:
+#   python3 -m venv .venv-sandbox && . .venv-sandbox/bin/activate
+#   pip install -r requirements-sandbox.txt
+# (.venv-sandbox/ is git-ignored; do not commit it.)
+contree-sdk

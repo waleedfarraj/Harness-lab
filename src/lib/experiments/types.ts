@@ -1,6 +1,7 @@
 import "server-only";
 
-import type { AgentTrajectory } from "../agent/types";
+import type { AgentTerminationReason, AgentTrajectory } from "../agent/types";
+import type { RunnerKind } from "../sandbox/runner-config";
 import type { SandboxHandle, SandboxRunner } from "../sandbox/types";
 
 export interface EvaluatorContext {
@@ -37,7 +38,7 @@ export interface CodingTask {
   /** Exact command strings the agent's run_command tool may execute. */
   allowedCommands: string[];
   evaluator: TaskEvaluator;
-  maxTurns?: number;
+  /** Infra-level safety bounds, not a harness axis — these stay fixed across every manifest a task is run under. */
   commandTimeoutMs?: number;
   experimentTimeoutMs?: number;
 }
@@ -54,7 +55,11 @@ export interface ExperimentMetrics {
 export interface ExperimentResult {
   runId: string;
   taskId: string;
+  /** Which HarnessManifest produced this result — the explicit config, not a hidden default. */
+  manifestId: string;
   success: boolean;
+  /** Why the agent loop stopped. See `AgentTerminationReason` — important for telling "ran out of turns" apart from "broke". */
+  terminationReason: AgentTerminationReason;
   evaluation: EvaluationFlags;
   changedFiles: string[];
   metrics: ExperimentMetrics;
@@ -62,6 +67,7 @@ export interface ExperimentResult {
     trajectory: AgentTrajectory;
     diff: string;
     evaluatorRaw: Record<string, unknown>;
-    stopReason: AgentTrajectory["stopReason"];
+    /** Which runner actually executed this, plus whatever runner-specific metadata it provided (e.g. base image, checkpoint id). Never fabricated. */
+    sandbox: { runner: RunnerKind; handleId: string; metadata?: Record<string, unknown> };
   };
 }

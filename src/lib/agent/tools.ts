@@ -1,29 +1,26 @@
 import "server-only";
 
-import fs from "node:fs";
-import path from "node:path";
+import { createHash } from "node:crypto";
 import type { SandboxHandle, SandboxRunner } from "../sandbox/types";
+import { assertSafeRelativePath, assertWritablePath, WorkspaceSecurityError } from "./workspace-security";
 import type { ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor } from "./types";
 
+export { WorkspaceSecurityError } from "./workspace-security";
+
 /**
- * The coding agent's only access to the outside world. Every function here
- * takes a `workspaceRoot` and refuses to touch anything outside it. See
- * `WorkspaceSecurityError` call sites for the specific rules enforced.
+ * The coding agent's only access to the outside world. Path/write policy is
+ * enforced here (once, for every runner) via workspace-security.ts; actual
+ * I/O is delegated to whichever SandboxRunner is active (local temp
+ * directory or a remote Token Factory Sandbox) — this module never touches
+ * a filesystem directly.
  */
 
-export class WorkspaceSecurityError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "WorkspaceSecurityError";
-  }
-}
-
-const BLOCKED_SEGMENTS = new Set([".git", "node_modules"]);
-const PROTECTED_FILES = new Set(["package.json", "tsconfig.json"]);
-const PROTECTED_DIR_PREFIXES = ["tests/"];
-
 const MAX_READ_CHARS = 40_000;
-const MAX_TOOL_OUTPUT_CHARS = 4_000;
+// Real Milestone 1 telemetry showed command output (verbose TAP test/build
+// logs) re-billed on every subsequent turn once it entered the conversation
+// history. 1500 chars is still enough to see pass/fail and the first
+// failure's detail; it isn't sized for dumping every subtest's full output.
+const MAX_TOOL_OUTPUT_CHARS = 1_500;
 const MAX_LISTED_FILES = 500;
 
 /** Only PATH/HOME/tmp vars are passed through; nothing from the app's own env (incl. NEBIUS_API_KEY) ever reaches a workspace command. */
@@ -40,79 +37,6 @@ function commandEnv(): Record<string, string> {
 
 function truncate(text: string, max = MAX_TOOL_OUTPUT_CHARS): string {
   return text.length > max ? `${text.slice(0, max)}\n...[truncated ${text.length - max} chars]` : text;
-}
-
-/** Resolves a model-supplied relative path against the workspace, rejecting escape attempts. */
-export function resolveWorkspacePath(workspaceRoot: string, relPath: string): string {
-  if (typeof relPath !== "string" || relPath.trim() === "") {
-    throw new WorkspaceSecurityError("path must be a non-empty string");
-  }
-  if (path.isAbsolute(relPath)) {
-    throw new WorkspaceSecurityError(`absolute paths are not allowed: ${relPath}`);
-  }
-  const segments = relPath.split(/[\\/]+/);
-  if (segments.includes("..")) {
-    throw new WorkspaceSecurityError(`path traversal ("..") is not allowed: ${relPath}`);
-  }
-  if (segments.some((segment) => BLOCKED_SEGMENTS.has(segment))) {
-    throw new WorkspaceSecurityError(`path touches a blocked directory: ${relPath}`);
-  }
-  const root = path.resolve(workspaceRoot);
-  const resolved = path.resolve(root, relPath);
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
-    throw new WorkspaceSecurityError(`resolved path escapes the workspace: ${relPath}`);
-  }
-  return resolved;
-}
-
-function assertWritable(relPath: string): void {
-  const normalized = relPath.replace(/\\/g, "/").replace(/^\.\//, "");
-  if (PROTECTED_FILES.has(normalized)) {
-    throw new WorkspaceSecurityError(`refusing to modify protected file: ${relPath}`);
-  }
-  if (PROTECTED_DIR_PREFIXES.some((prefix) => normalized.startsWith(prefix))) {
-    throw new WorkspaceSecurityError(`refusing to modify public tests: ${relPath}`);
-  }
-}
-
-export function listWorkspaceFiles(workspaceRoot: string, relDir = "."): string[] {
-  const root = path.resolve(workspaceRoot);
-  const startDir = resolveWorkspacePath(workspaceRoot, relDir);
-  const out: string[] = [];
-
-  function walk(dir: string): void {
-    if (out.length >= MAX_LISTED_FILES) return;
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (BLOCKED_SEGMENTS.has(entry.name)) continue;
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(full);
-      } else {
-        out.push(path.relative(root, full).split(path.sep).join("/"));
-      }
-      if (out.length >= MAX_LISTED_FILES) return;
-    }
-  }
-
-  walk(startDir);
-  return out.sort();
-}
-
-export function readWorkspaceFile(workspaceRoot: string, relPath: string): string {
-  const full = resolveWorkspacePath(workspaceRoot, relPath);
-  const stat = fs.statSync(full);
-  if (!stat.isFile()) {
-    throw new WorkspaceSecurityError(`not a file: ${relPath}`);
-  }
-  const text = fs.readFileSync(full, "utf8");
-  return text.length > MAX_READ_CHARS ? `${text.slice(0, MAX_READ_CHARS)}\n...[truncated]` : text;
-}
-
-export function writeWorkspaceFile(workspaceRoot: string, relPath: string, content: string): void {
-  assertWritable(relPath);
-  const full = resolveWorkspacePath(workspaceRoot, relPath);
-  fs.mkdirSync(path.dirname(full), { recursive: true });
-  fs.writeFileSync(full, content, "utf8");
 }
 
 export interface RunCommandResult {
@@ -158,7 +82,7 @@ export async function runAllowlistedCommand(
 
 export async function gitDiff(runner: SandboxRunner, sandbox: SandboxHandle): Promise<string> {
   const result = await runner.execute(sandbox, { command: "git", args: ["diff", "--no-color"], env: commandEnv() });
-  return truncate(result.stdout ?? "", 20_000);
+  return truncate(result.stdout ?? "");
 }
 
 export function buildToolDefinitions(allowedCommands: string[]): ToolDefinition[] {
@@ -223,29 +147,37 @@ export interface ToolExecutorOptions {
   commandTimeoutMs: number;
 }
 
-function requireLocalRoot(sandbox: SandboxHandle): string {
-  if (!sandbox.root) {
-    throw new WorkspaceSecurityError(
-      "this sandbox has no local filesystem view; list_files/read_file/write_file are unsupported by this runner",
-    );
-  }
-  return sandbox.root;
-}
-
 /** Wires the tool implementations into a single dispatcher for the agent loop. */
 export function createToolExecutor(options: ToolExecutorOptions): ToolExecutor {
+  // Per-run state: if the agent re-reads a file whose content hasn't changed
+  // since the last time we returned it, don't pay to resend it verbatim —
+  // it's already sitting in the conversation history from the first read.
+  const lastReadHash = new Map<string, string>();
+
   return async (call: ToolCall): Promise<ToolExecutionResult> => {
     try {
       switch (call.name) {
         case "list_files": {
           const relDir = typeof call.arguments.path === "string" ? call.arguments.path : ".";
-          const files = listWorkspaceFiles(requireLocalRoot(options.sandbox), relDir);
+          assertSafeRelativePath(relDir);
+          const files = (await options.runner.listFiles(options.sandbox, relDir)).slice(0, MAX_LISTED_FILES).sort();
           return { ok: true, content: files.length > 0 ? files.join("\n") : "(empty directory)" };
         }
         case "read_file": {
           const relPath = call.arguments.path;
           if (typeof relPath !== "string") throw new WorkspaceSecurityError("path must be a string");
-          return { ok: true, content: readWorkspaceFile(requireLocalRoot(options.sandbox), relPath) };
+          assertSafeRelativePath(relPath);
+          const raw = await options.runner.readFile(options.sandbox, relPath);
+          const content = raw.length > MAX_READ_CHARS ? `${raw.slice(0, MAX_READ_CHARS)}\n...[truncated]` : raw;
+          const hash = createHash("sha256").update(content).digest("hex");
+          if (lastReadHash.get(relPath) === hash) {
+            return {
+              ok: true,
+              content: `(unchanged since your last read of ${relPath} — content is identical to what you already have)`,
+            };
+          }
+          lastReadHash.set(relPath, hash);
+          return { ok: true, content };
         }
         case "write_file": {
           const relPath = call.arguments.path;
@@ -253,7 +185,9 @@ export function createToolExecutor(options: ToolExecutorOptions): ToolExecutor {
           if (typeof relPath !== "string" || typeof content !== "string") {
             throw new WorkspaceSecurityError("path and content must be strings");
           }
-          writeWorkspaceFile(requireLocalRoot(options.sandbox), relPath, content);
+          assertSafeRelativePath(relPath);
+          assertWritablePath(relPath);
+          await options.runner.writeFile(options.sandbox, relPath, content);
           return { ok: true, content: `wrote ${content.length} chars to ${relPath}` };
         }
         case "run_command": {
