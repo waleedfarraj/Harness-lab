@@ -6,26 +6,39 @@ import { runCodingAgent } from "../agent/coding-agent";
 import { buildToolDefinitions, createToolExecutor } from "../agent/tools";
 import type { HarnessManifest } from "../harness/types";
 import { validateHarnessManifest } from "../harness/validate";
-import { createSandboxRunner, resolveRunnerKind } from "../sandbox/runner-config";
+import { createSandboxRunner, resolveRunnerKind, type RunnerKind } from "../sandbox/runner-config";
+import type { SandboxHandle, SandboxRunner } from "../sandbox/types";
 import { writeRunEvidence } from "./evidence";
 import type { CodingTask, ExperimentResult } from "./types";
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 const DEFAULT_EXPERIMENT_TIMEOUT_MS = 5 * 60_000;
 
+export interface RunExperimentOptions {
+  /** Injected for tests, or to reuse a runner already resolved by a caller (e.g. a shared-checkpoint factorial run). */
+  runner?: SandboxRunner;
+  /**
+   * A sandbox already created for this run (e.g. via `runner.forkFrom(sharedBase, ...)`).
+   * When given, `runExperiment` skips its own `runner.create()` call but still destroys
+   * this handle in its `finally` block, same as a self-created one.
+   */
+  sandbox?: SandboxHandle;
+}
+
 /**
  * Runs one coding task, under one explicit HarnessManifest, end to end:
  * fresh workspace from the canonical fixture -> bounded agent tool loop
- * (model/systemPrompt/maxTurns all from `manifest`) -> deterministic
- * evaluation -> evidence written to disk -> workspace destroyed.
+ * (model/systemPrompt/skills/contextPolicy/maxTurns all from `manifest`) ->
+ * deterministic evaluation -> evidence written to disk -> workspace
+ * destroyed.
  */
-export async function runExperiment(task: CodingTask, manifest: HarnessManifest): Promise<ExperimentResult> {
+export async function runExperiment(task: CodingTask, manifest: HarnessManifest, options: RunExperimentOptions = {}): Promise<ExperimentResult> {
   validateHarnessManifest(manifest);
   const runId = crypto.randomUUID();
-  const runnerKind = resolveRunnerKind();
-  const runner = createSandboxRunner();
+  const runnerKind: RunnerKind = resolveRunnerKind();
+  const runner = options.runner ?? createSandboxRunner();
   const fixtureRoot = path.resolve(task.fixturePath);
-  const sandbox = await runner.create({ label: `${task.id}-${manifest.id}`, fixturePath: task.fixturePath });
+  const sandbox = options.sandbox ?? (await runner.create({ label: `${task.id}-${manifest.id}`, fixturePath: task.fixturePath }));
   const startedAt = performance.now();
 
   try {
@@ -41,6 +54,8 @@ export async function runExperiment(task: CodingTask, manifest: HarnessManifest)
     const trajectory = await runCodingAgent({
       model: manifest.model,
       systemPrompt: manifest.systemPrompt,
+      skills: manifest.skills,
+      contextPolicy: manifest.contextPolicy,
       instruction: task.instruction,
       toolDefinitions,
       executeTool,

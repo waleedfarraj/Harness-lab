@@ -1,6 +1,7 @@
 import "server-only";
 
 import { diffManifests } from "./diff";
+import { applyDimension } from "./dimension";
 import type { HarnessDimension, HarnessManifest } from "./types";
 
 /**
@@ -27,19 +28,6 @@ export interface FactorialExperiment {
   taskId: string;
   factors: FactorDefinition[];
   cells: FactorialCell[];
-}
-
-function applyDimension(manifest: HarnessManifest, dimension: HarnessDimension, value: unknown): HarnessManifest {
-  switch (dimension) {
-    case "model":
-      return { ...manifest, model: value as string };
-    case "systemPrompt":
-      return { ...manifest, systemPrompt: value as string };
-    case "execution.maxTurns":
-      return { ...manifest, execution: { ...manifest.execution, maxTurns: value as number } };
-    default:
-      throw new Error(`unknown harness dimension: ${dimension satisfies never}`);
-  }
 }
 
 /**

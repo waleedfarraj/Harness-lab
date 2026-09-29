@@ -8,6 +8,8 @@ export function diffManifests(a: HarnessManifest, b: HarnessManifest): HarnessDi
   if (a.model !== b.model) changed.push("model");
   if (a.systemPrompt !== b.systemPrompt) changed.push("systemPrompt");
   if (a.execution.maxTurns !== b.execution.maxTurns) changed.push("execution.maxTurns");
+  if (JSON.stringify(a.skills) !== JSON.stringify(b.skills)) changed.push("skills");
+  if (a.contextPolicy !== b.contextPolicy) changed.push("contextPolicy");
   return changed;
 }
 

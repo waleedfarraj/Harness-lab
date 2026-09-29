@@ -12,6 +12,8 @@ function validManifest(overrides: Partial<HarnessManifest> = {}): HarnessManifes
     model: "nvidia/test-model",
     systemPrompt: "Be a good agent.",
     execution: { maxTurns: 5 },
+    skills: [{ id: "test-skill", content: "do the thing" }],
+    contextPolicy: "full",
     ...overrides,
   };
 }
@@ -43,4 +45,40 @@ test("reports every problem at once", () => {
     assert.equal(err.problems.length, 2);
     return true;
   });
+});
+
+test("rejects a non-array skills field", () => {
+  // @ts-expect-error deliberately wrong shape
+  assert.throws(() => validateHarnessManifest(validManifest({ skills: "not-an-array" })), InvalidHarnessManifestError);
+});
+
+test("accepts an empty skills array (no skills is valid)", () => {
+  assert.doesNotThrow(() => validateHarnessManifest(validManifest({ skills: [] })));
+});
+
+test("rejects a skill with an empty id or content", () => {
+  assert.throws(
+    () => validateHarnessManifest(validManifest({ skills: [{ id: "", content: "x" }] })),
+    InvalidHarnessManifestError,
+  );
+  assert.throws(
+    () => validateHarnessManifest(validManifest({ skills: [{ id: "x", content: "" }] })),
+    InvalidHarnessManifestError,
+  );
+});
+
+test("rejects a contextPolicy that isn't full or compact", () => {
+  // @ts-expect-error deliberately wrong value
+  assert.throws(() => validateHarnessManifest(validManifest({ contextPolicy: "sparse" })), InvalidHarnessManifestError);
+});
+
+test("accepts both valid contextPolicy values", () => {
+  assert.doesNotThrow(() => validateHarnessManifest(validManifest({ contextPolicy: "full" })));
+  assert.doesNotThrow(() => validateHarnessManifest(validManifest({ contextPolicy: "compact" })));
+});
+
+test("a manifest with skills round-trips through JSON without loss", () => {
+  const manifest = validManifest({ skills: [{ id: "s1", content: "line one\nline two" }] });
+  const roundTripped = JSON.parse(JSON.stringify(manifest));
+  assert.deepEqual(roundTripped, manifest);
 });

@@ -1,5 +1,6 @@
 import "server-only";
 
+import { baselineSkill } from "../skills/baseline-skill";
 import type { HarnessManifest } from "../types";
 
 /**
@@ -22,4 +23,6 @@ export const candidateMinimalV1: HarnessManifest = {
   execution: {
     maxTurns: 8,
   },
+  skills: [baselineSkill],
+  contextPolicy: "full",
 };

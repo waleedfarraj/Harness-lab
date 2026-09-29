@@ -11,7 +11,7 @@ const config: NebiusConfig = {
   model: "test-model",
   timeoutMs: 2000,
 };
-const HARNESS = { model: "test-model", systemPrompt: "You are a test agent." };
+const HARNESS = { model: "test-model", systemPrompt: "You are a test agent.", skills: [], contextPolicy: "full" as const };
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -233,4 +233,96 @@ test("records per-request message count and serialized size, growing as the conv
       assert.equal(call.resultChars, "some file content".length);
     }
   }
+});
+
+function capturingFetch(bodies: Array<{ status: number; body: unknown }>): { fetchImpl: typeof fetch; requests: Record<string, unknown>[] } {
+  const requests: Record<string, unknown>[] = [];
+  let i = 0;
+  const fetchImpl = (async (_url: string, init: RequestInit) => {
+    requests.push(JSON.parse(init.body as string));
+    const entry = bodies[Math.min(i, bodies.length - 1)];
+    i += 1;
+    return jsonResponse(entry.status, entry.body);
+  }) as typeof fetch;
+  return { fetchImpl, requests };
+}
+
+test("skill content is injected into the system message, clearly delimited and labeled by id", async () => {
+  const { fetchImpl, requests } = capturingFetch([{ status: 200, body: assistantMessage("done") }]);
+
+  await runCodingAgent({
+    model: "test-model",
+    systemPrompt: "Base system prompt.",
+    skills: [{ id: "verification-skill-v2", content: "Avoid redundant reads." }],
+    contextPolicy: "full",
+    instruction: "do the task",
+    toolDefinitions: [],
+    executeTool: async () => ({ ok: true, content: "" }),
+    maxTurns: 1,
+    config,
+    fetchImpl,
+  });
+
+  const systemMessage = (requests[0].messages as { role: string; content: string }[])[0];
+  assert.equal(systemMessage.role, "system");
+  assert.match(systemMessage.content, /^Base system prompt\./);
+  assert.match(systemMessage.content, /## Skill: verification-skill-v2/);
+  assert.match(systemMessage.content, /Avoid redundant reads\./);
+});
+
+test("context telemetry: full policy reports every tool result as preserved, never compacted", async () => {
+  const { fetchImpl } = capturingFetch([
+    { status: 200, body: assistantMessage(null, [{ id: "c1", name: "read_file", args: { path: "src/a.ts" } }]) },
+    { status: 200, body: assistantMessage("done") },
+  ]);
+
+  const trajectory = await runCodingAgent({
+    ...HARNESS,
+    contextPolicy: "full",
+    instruction: "task",
+    toolDefinitions: [],
+    executeTool: async () => ({ ok: true, content: "x".repeat(5000) }),
+    maxTurns: 3,
+    config,
+    fetchImpl,
+  });
+
+  const secondTurnRequest = trajectory.turns[1].request;
+  assert.equal(secondTurnRequest.contextPolicy, "full");
+  assert.deepEqual(secondTurnRequest.compactedToolResultIdentifiers, []);
+  assert.deepEqual(secondTurnRequest.preservedToolResultIdentifiers, ["src/a.ts"]);
+  assert.deepEqual(secondTurnRequest.newCompactionEvents, []);
+});
+
+test("context telemetry: compact policy reports a compaction event once the trigger is crossed, and the model actually receives the summary", async () => {
+  const { fetchImpl, requests } = capturingFetch([
+    { status: 200, body: assistantMessage(null, [{ id: "c1", name: "read_file", args: { path: "src/contract.ts" } }]) },
+    { status: 200, body: assistantMessage(null, [{ id: "c2", name: "read_file", args: { path: "src/impl.ts" } }]) },
+    { status: 200, body: assistantMessage(null, [{ id: "c3", name: "read_file", args: { path: "tests/a.test.ts" } }]) },
+    { status: 200, body: assistantMessage("done") },
+  ]);
+
+  const trajectory = await runCodingAgent({
+    ...HARNESS,
+    contextPolicy: "compact",
+    instruction: "task",
+    toolDefinitions: [],
+    executeTool: async () => ({ ok: true, content: "y".repeat(2000) }),
+    maxTurns: 5,
+    config,
+    fetchImpl,
+  });
+
+  // By turn 4 there are 3 prior tool results (~6000+ chars, over the trigger); the oldest
+  // (contract.ts) is older than the 2 most recently kept and should be compacted away.
+  const turn4Request = trajectory.turns[3].request;
+  assert.equal(turn4Request.contextPolicy, "compact");
+  assert.ok(turn4Request.compactedToolResultIdentifiers.includes("src/contract.ts"));
+  assert.ok(!turn4Request.preservedToolResultIdentifiers.includes("src/contract.ts"));
+
+  // The actual request body sent to the model must reflect the compacted summary, not the original content.
+  const turn4Body = requests[3];
+  const toolMessages = (turn4Body.messages as { role: string; content: string | null }[]).filter((m) => m.role === "tool");
+  const contractResultMessage = toolMessages[0];
+  assert.match(contractResultMessage.content ?? "", /^\[compacted read_file result for src\/contract\.ts: \d+ chars omitted\]$/);
 });

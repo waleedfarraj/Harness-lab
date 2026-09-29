@@ -30,6 +30,8 @@ const baselineManifest: HarnessManifest = {
   model: "m",
   systemPrompt: "base prompt",
   execution: { maxTurns: 8 },
+  skills: [],
+  contextPolicy: "full",
 };
 const candidateManifest: HarnessManifest = {
   ...baselineManifest,
@@ -53,7 +55,14 @@ function trajectory(toolCalls: AgentToolCallRecord[]): AgentTrajectory {
         startedAt: new Date().toISOString(),
         durationMs: 1,
         usage: null,
-        request: { messageCount: 2, serializedSizeChars: 10 },
+        request: {
+          messageCount: 2,
+          serializedSizeChars: 10,
+          contextPolicy: "full",
+          preservedToolResultIdentifiers: [],
+          compactedToolResultIdentifiers: [],
+          newCompactionEvents: [],
+        },
       },
     ],
     toolCallCount: toolCalls.length,

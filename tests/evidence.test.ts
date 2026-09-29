@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { writeComparisonEvidence, writeInteractionEvidence, writeRunEvidence } from "../src/lib/experiments/evidence";
+import { writeComparisonEvidence, writeDiagnosisEvidence, writeInteractionEvidence, writeRunEvidence } from "../src/lib/experiments/evidence";
 import type { HarnessComparison } from "../src/lib/experiments/compare";
 import type { FactorialInteractionResult } from "../src/lib/experiments/interaction";
 import type { ExperimentResult } from "../src/lib/experiments/types";
+import type { DiagnosisResult } from "../src/lib/diagnosis/types";
 
 function sampleResult(runId: string): ExperimentResult {
   return {
@@ -106,6 +107,9 @@ test("writeInteractionEvidence writes a JSON file that round-trips all four cell
     interactionContrast: 1,
     interactionObserved: true,
     behaviorEvidence: ["example evidence line"],
+    sharedBaseCheckpoint: "chk-shared-base",
+    environmentPreparationMs: 12000,
+    forkTimingsMs: [10, 12, 9, 11],
   };
 
   const filePath = writeInteractionEvidence(interaction);
@@ -114,6 +118,58 @@ test("writeInteractionEvidence writes a JSON file that round-trips all four cell
     const raw = fs.readFileSync(filePath, "utf8");
     assert.doesNotMatch(raw, /NEBIUS_API_KEY/);
     assert.deepEqual(JSON.parse(raw), interaction);
+  } finally {
+    fs.rmSync(filePath, { force: true });
+  }
+});
+
+test("writeDiagnosisEvidence writes a JSON file that round-trips the full diagnosis, with no secret fields", () => {
+  const diagnosisId = `test-diag-${Date.now()}`;
+  const diagnosis: DiagnosisResult = {
+    diagnosisId,
+    taskId: "discount-apply-001",
+    baselineResult: sampleResult("baseline-run"),
+    candidateResult: { ...sampleResult("candidate-run"), success: false, terminationReason: "max_turns" },
+    regressionDetected: true,
+    changedDimensions: ["skills", "contextPolicy"],
+    experiments: [
+      {
+        id: "experiment-1",
+        configuration: { skills: "candidate", contextPolicy: "baseline" },
+        manifest: {
+          id: "diagnostic-1",
+          name: "diagnostic-1",
+          model: "m",
+          systemPrompt: "p",
+          execution: { maxTurns: 8 },
+          skills: [{ id: "verification-skill-v2", content: "c" }],
+          contextPolicy: "full",
+        },
+        whySelected: "Distinguishes whether skills alone reproduces the regression.",
+        hypothesesBefore: [],
+        result: sampleResult("experiment-1-run"),
+        hypothesesAfter: [],
+      },
+    ],
+    diagnosis: { type: "interaction", factors: ["skills", "contextPolicy"] },
+    evidence: [
+      { label: "baseline", configuration: { skills: "baseline", contextPolicy: "baseline" }, success: true },
+      { label: "candidate", configuration: { skills: "candidate", contextPolicy: "candidate" }, success: false },
+    ],
+    fixedMechanismsObserved: ["read-file deduplication returned an \"unchanged\" marker instead of file content 1 time(s)"],
+    mechanismExplanation: "Nemotron's explanation text.",
+    experimentsRun: 1,
+    exhaustiveConfigurations: 4,
+    sharedBaseCheckpoint: "chk-shared-base",
+    environmentPreparationMs: 12000,
+  };
+
+  const filePath = writeDiagnosisEvidence(diagnosis);
+  try {
+    assert.equal(filePath, path.join(process.cwd(), ".harnesslab", "diagnoses", `${diagnosisId}.json`));
+    const raw = fs.readFileSync(filePath, "utf8");
+    assert.doesNotMatch(raw, /NEBIUS_API_KEY/);
+    assert.deepEqual(JSON.parse(raw), diagnosis);
   } finally {
     fs.rmSync(filePath, { force: true });
   }

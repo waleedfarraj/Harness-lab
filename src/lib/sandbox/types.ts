@@ -58,6 +58,17 @@ export interface SandboxExecResult {
 
 export interface SandboxRunner {
   create(options?: SandboxCreateOptions): Promise<SandboxHandle>;
+  /**
+   * Creates a new, independent handle starting from `base`'s current state,
+   * without redoing `create()`'s setup (fixture copy, dependency install,
+   * git init). For a remote checkpoint-based runner this is effectively
+   * free — Contree's own branching model already means multiple operations
+   * starting from the same checkpoint are independent (see Milestone 3.5's
+   * branch spike); for a local, filesystem-based runner it's a directory
+   * copy. `base` itself is left untouched and must still be destroyed by
+   * its own creator.
+   */
+  forkFrom(base: SandboxHandle, label?: string): Promise<SandboxHandle>;
   execute(sandbox: SandboxHandle, command: SandboxCommand): Promise<SandboxExecResult>;
   listFiles(sandbox: SandboxHandle, dir: string): Promise<string[]>;
   readFile(sandbox: SandboxHandle, path: string): Promise<string>;

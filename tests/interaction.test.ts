@@ -8,6 +8,7 @@ import type { FactorDefinition } from "../src/lib/harness/factorial";
 import type { HarnessManifest } from "../src/lib/harness/types";
 import type { AgentTerminationReason, AgentTrajectory } from "../src/lib/agent/types";
 import type { CodingTask, ExperimentResult } from "../src/lib/experiments/types";
+import type { SandboxHandle, SandboxRunner } from "../src/lib/sandbox/types";
 
 /** runFactorialExperiment always writes real evidence to disk; tests must clean up after themselves. */
 function interactionEvidencePath(interactionId: string): string {
@@ -31,6 +32,8 @@ const baseManifest: HarnessManifest = {
   model: "shared-model",
   systemPrompt: "prompt-a",
   execution: { maxTurns: 8 },
+  skills: [],
+  contextPolicy: "full",
 };
 
 const promptFactor: FactorDefinition<string> = { name: "systemPrompt", baselineValue: "prompt-a", candidateValue: "prompt-b" };
@@ -46,7 +49,14 @@ function trajectory(terminationReason: AgentTerminationReason, agentTurns: numbe
       startedAt: new Date().toISOString(),
       durationMs: 1,
       usage: null,
-      request: { messageCount: 2, serializedSizeChars: 10 },
+      request: {
+        messageCount: 2,
+        serializedSizeChars: 10,
+        contextPolicy: "full",
+        preservedToolResultIdentifiers: [],
+        compactedToolResultIdentifiers: [],
+        newCompactionEvents: [],
+      },
     })),
     toolCallCount: 0,
     stopReason: terminationReason,
@@ -79,6 +89,68 @@ function fakeResult(success: boolean, terminationReason: AgentTerminationReason,
     },
   };
 }
+
+function fakeSharedRunner(): { runner: SandboxRunner; createCalls: number; forkCalls: SandboxHandle[]; destroyed: SandboxHandle[] } {
+  let createCalls = 0;
+  const forkCalls: SandboxHandle[] = [];
+  const destroyed: SandboxHandle[] = [];
+  const runner: SandboxRunner = {
+    async create() {
+      createCalls += 1;
+      return { id: "shared-base", checkpoint: "chk-shared-base" };
+    },
+    async forkFrom(base, label) {
+      const handle = { id: `${label}-fork`, checkpoint: base.checkpoint };
+      forkCalls.push(handle);
+      return handle;
+    },
+    async execute() {
+      throw new Error("not used");
+    },
+    async listFiles() {
+      throw new Error("not used");
+    },
+    async readFile() {
+      throw new Error("not used");
+    },
+    async writeFile() {
+      throw new Error("not used");
+    },
+    async destroy(sandbox) {
+      destroyed.push(sandbox);
+    },
+  };
+  return { runner, createCalls, forkCalls, destroyed };
+}
+
+test("runFactorialExperiment with sharedCheckpoint prepares the base once and forks each of the four cells from it", async (t) => {
+  const shared = fakeSharedRunner();
+  const passResult = (id: string) => fakeResult(true, "completed", 7, id);
+  const cellSandboxes: (SandboxHandle | undefined)[] = [];
+
+  const interaction = await runFactorialExperiment({
+    task,
+    factors: [promptFactor, turnsFactor],
+    baseManifest,
+    sharedCheckpoint: true,
+    runner: shared.runner,
+    runExperimentFn: async (_t, manifest, options) => {
+      cellSandboxes.push(options?.sandbox);
+      return passResult(manifest.id);
+    },
+  });
+  t.after(() => fs.rmSync(interactionEvidencePath(interaction.interactionId), { force: true }));
+
+  assert.equal(shared.forkCalls.length, 4, "one fork per cell");
+  assert.equal(cellSandboxes.length, 4);
+  for (const sandbox of cellSandboxes) {
+    assert.equal(sandbox?.checkpoint, "chk-shared-base", "every cell forks from the same shared checkpoint");
+  }
+  assert.equal(interaction.sharedBaseCheckpoint, "chk-shared-base");
+  assert.equal(typeof interaction.environmentPreparationMs, "number");
+  assert.equal(interaction.forkTimingsMs.length, 4);
+  assert.deepEqual(shared.destroyed.map((h) => h.id).sort(), ["shared-base"], "only the shared base is destroyed by the orchestrator itself");
+});
 
 test("runFactorialExperiment calls the runner exactly once per cell, with the task/model held identical", async (t) => {
   const calledManifests: HarnessManifest[] = [];
@@ -172,7 +244,18 @@ test("computeFactorialBehaviorEvidence reports max_turns vs completed asymmetry 
     D: cell("D", "completed", 7),
   });
 
-  assert.ok(evidence.some((l) => l.includes("Baseline prompt + constrained turns") && l.includes("max-turn limit")));
-  assert.ok(evidence.some((l) => l.includes("Minimal prompt + constrained turns") && l.includes("completed naturally")));
-  assert.ok(evidence.some((l) => l.includes("Result under the constrained turn budget differs by prompt")));
+  assert.ok(evidence.some((l) => l.includes("C") && l.includes("max-turn limit")));
+  assert.ok(evidence.some((l) => l.includes("D") && l.includes("completed naturally")));
+  assert.ok(evidence.some((l) => l.startsWith("Result differs:")));
+});
+
+test("computeFactorialBehaviorEvidence uses custom labels when given", () => {
+  function cell(id: string, terminationReason: AgentTerminationReason, agentTurns: number): FactorialCellOutcome {
+    return { cellId: id, factors: {}, result: fakeResult(terminationReason === "completed", terminationReason, agentTurns, id) };
+  }
+  const evidence = computeFactorialBehaviorEvidence(
+    { A: cell("A", "completed", 8), B: cell("B", "completed", 7), C: cell("C", "max_turns", 7), D: cell("D", "completed", 7) },
+    { A: "baseline+full", B: "verification+full", C: "baseline+compact", D: "verification+compact" },
+  );
+  assert.ok(evidence.some((l) => l.includes("baseline+compact") && l.includes("max-turn limit")));
 });

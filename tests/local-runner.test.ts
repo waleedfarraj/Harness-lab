@@ -67,3 +67,35 @@ test("destroy() removes the workspace directory", async () => {
   await runner.destroy(sandbox);
   assert.ok(!fs.existsSync(sandbox.root!));
 });
+
+test("forkFrom() creates an independent workspace without redoing create()'s setup, sharing the base's git history", async () => {
+  const runner = new LocalExperimentRunner();
+  const base = await runner.create({ label: "shared-base", fixturePath: FIXTURE_PATH });
+  try {
+    const forkA = await runner.forkFrom(base, "cell-a");
+    const forkB = await runner.forkFrom(base, "cell-b");
+    try {
+      assert.notEqual(forkA.root, base.root);
+      assert.notEqual(forkB.root, base.root);
+      assert.notEqual(forkA.root, forkB.root);
+
+      // both forks start from the base's exact fixture content and git history
+      assert.ok(fs.existsSync(`${forkA.root}/src/paymentRetry.ts`));
+      assert.ok(fs.existsSync(`${forkA.root}/.git`));
+      assert.ok(!fs.existsSync(`${forkA.root}/hidden`));
+
+      // node_modules is still a (working) symlink after the copy, not dereferenced into a full copy
+      assert.ok(fs.lstatSync(`${forkA.root}/node_modules`).isSymbolicLink());
+
+      // changes in one fork are invisible in the other and in the base
+      fs.writeFileSync(`${forkA.root}/src/paymentRetry.ts`, "// fork A change\n");
+      assert.notEqual(fs.readFileSync(`${forkB.root}/src/paymentRetry.ts`, "utf8"), "// fork A change\n");
+      assert.notEqual(fs.readFileSync(`${base.root}/src/paymentRetry.ts`, "utf8"), "// fork A change\n");
+    } finally {
+      await runner.destroy(forkA);
+      await runner.destroy(forkB);
+    }
+  } finally {
+    await runner.destroy(base);
+  }
+});

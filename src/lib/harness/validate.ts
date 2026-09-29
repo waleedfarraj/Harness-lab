@@ -29,6 +29,17 @@ export function validateHarnessManifest(manifest: HarnessManifest): void {
   ) {
     problems.push("execution.maxTurns must be a positive integer");
   }
+  if (!Array.isArray(manifest.skills)) {
+    problems.push("skills must be an array");
+  } else {
+    manifest.skills.forEach((skill, i) => {
+      if (typeof skill?.id !== "string" || skill.id.trim() === "") problems.push(`skills[${i}].id must be a non-empty string`);
+      if (typeof skill?.content !== "string" || skill.content.trim() === "") problems.push(`skills[${i}].content must be a non-empty string`);
+    });
+  }
+  if (manifest.contextPolicy !== "full" && manifest.contextPolicy !== "compact") {
+    problems.push('contextPolicy must be "full" or "compact"');
+  }
 
   if (problems.length > 0) {
     throw new InvalidHarnessManifestError(problems);

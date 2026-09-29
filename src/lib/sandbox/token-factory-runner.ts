@@ -187,7 +187,21 @@ export class TokenFactorySandboxRunner implements SandboxRunner {
     if (!response.ok || !response.checkpoint) throw new SandboxBridgeError(response.error ?? "create failed with no error detail");
 
     const id = `${options.label ?? "run"}-${crypto.randomUUID()}`;
-    return { id, checkpoint: response.checkpoint, metadata: { baseImage: BASE_IMAGE } };
+    return { id, checkpoint: response.checkpoint, metadata: { baseImage: BASE_IMAGE, forkedFrom: null } };
+  }
+
+  /**
+   * No bridge call at all: Contree's checkpoints are already forkable by
+   * construction (verified in the Milestone 3.5 branch spike — multiple
+   * independent operations starting from the same checkpoint UUID produce
+   * independent results). Forking here is just handing out a new handle
+   * that starts from the same checkpoint string; the actual "fork" happens
+   * implicitly the first time this handle's execute/write_file runs.
+   */
+  async forkFrom(base: SandboxHandle, label?: string): Promise<SandboxHandle> {
+    if (!base.checkpoint) throw new Error("TokenFactorySandboxRunner.forkFrom: base handle has no checkpoint");
+    const id = `${label ?? "fork"}-${crypto.randomUUID()}`;
+    return { id, checkpoint: base.checkpoint, metadata: { ...base.metadata, forkedFrom: base.checkpoint } };
   }
 
   async execute(sandbox: SandboxHandle, command: SandboxCommand): Promise<SandboxExecResult> {

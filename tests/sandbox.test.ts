@@ -68,6 +68,19 @@ test("create() maps the bridge response into a checkpoint-bearing handle", async
   assert.equal(handle.metadata?.baseImage, "node:22-slim");
 });
 
+test("forkFrom() makes no bridge call and hands out an independent handle on the same checkpoint", async () => {
+  const runner = fakeRunner("fail"); // if forkFrom called the bridge, this mode would make it throw
+  const base = { id: "base", checkpoint: "chk-shared-base", metadata: { baseImage: "node:22-slim" } };
+
+  const forkA = await runner.forkFrom(base, "cell-a");
+  const forkB = await runner.forkFrom(base, "cell-b");
+
+  assert.equal(forkA.checkpoint, "chk-shared-base");
+  assert.equal(forkB.checkpoint, "chk-shared-base");
+  assert.notEqual(forkA.id, forkB.id);
+  assert.equal(forkA.metadata?.forkedFrom, "chk-shared-base");
+});
+
 test("execute() maps stdout/stderr/exitCode and threads the new checkpoint forward", async () => {
   const runner = fakeRunner("ok");
   const handle: SandboxHandle = { id: "x", checkpoint: "chk-0" };

@@ -1,11 +1,17 @@
 import "server-only";
 
+import { baselineSkill } from "../skills/baseline-skill";
 import type { HarnessManifest } from "../types";
 
 /**
  * The exact coding-agent configuration that passed Milestone 1's real
  * end-to-end run. This is the fixed reference point for Milestone 2's
  * comparison — not a hidden default baked into the agent loop.
+ *
+ * From Milestone 4 onward this formalizes what was previously implicit
+ * agent behavior as an explicit `baseline-skill`, and runs under the "full"
+ * context policy (no compaction) — this is an additive, honestly-documented
+ * change, not a silent redefinition of a manifest already reported on.
  */
 export const baselineV1: HarnessManifest = {
   id: "baseline-v1",
@@ -21,4 +27,6 @@ export const baselineV1: HarnessManifest = {
   execution: {
     maxTurns: 8,
   },
+  skills: [baselineSkill],
+  contextPolicy: "full",
 };

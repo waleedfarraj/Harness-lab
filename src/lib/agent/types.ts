@@ -1,5 +1,7 @@
 import "server-only";
 
+import type { ContextPolicy } from "../harness/types";
+
 /** JSON-Schema-shaped parameters, passed straight through to the model's tool spec. */
 export type ToolParameterSchema = Record<string, unknown>;
 
@@ -35,12 +37,28 @@ export interface AgentToolCallRecord {
   resultChars: number;
 }
 
+/** One tool result whose content was replaced with a bounded summary by the "compact" context policy on this turn. */
+export interface ContextCompactionEvent {
+  toolName: string;
+  /** File path, command, or other identifier for what the result was about — kept even when the content is dropped. */
+  identifier: string;
+  originalChars: number;
+  compactedChars: number;
+}
+
 /** Token/size accounting for one request to the model, to explain where cost comes from. */
 export interface AgentRequestMeta {
   /** Number of messages in the conversation sent on this request (system + user + all prior turns). */
   messageCount: number;
   /** Approximate serialized size of the request body, in characters. */
   serializedSizeChars: number;
+  contextPolicy: ContextPolicy;
+  /** Identifiers of tool results still present verbatim in this request. */
+  preservedToolResultIdentifiers: string[];
+  /** Identifiers of tool results already compacted by a prior turn (still compacted, not re-expanded). */
+  compactedToolResultIdentifiers: string[];
+  /** Tool results compacted for the FIRST time on this specific turn. */
+  newCompactionEvents: ContextCompactionEvent[];
 }
 
 export interface AgentTurnRecord {

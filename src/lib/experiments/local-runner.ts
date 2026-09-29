@@ -67,7 +67,18 @@ export class LocalExperimentRunner implements SandboxRunner {
       "canonical fixture state",
     ]);
 
-    return { id, root };
+    return { id, root, metadata: { forkedFrom: null } };
+  }
+
+  async forkFrom(base: SandboxHandle, label?: string): Promise<SandboxHandle> {
+    if (!base.root) throw new Error("LocalExperimentRunner.forkFrom: base handle has no local root");
+    const id = `${label ?? "fork"}-${crypto.randomUUID()}`;
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "harnesslab-"));
+    // Copies the whole tree, including the node_modules symlink (copied as a symlink, not
+    // dereferenced) and .git — each fork keeps the same starting commit as `base`, so its own
+    // `git diff` shows only its own later changes.
+    await fs.promises.cp(base.root, root, { recursive: true, verbatimSymlinks: true });
+    return { id, root, metadata: { forkedFrom: base.root } };
   }
 
   async execute(sandbox: SandboxHandle, command: SandboxCommand): Promise<SandboxExecResult> {

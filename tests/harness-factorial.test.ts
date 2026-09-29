@@ -14,6 +14,8 @@ const baseManifest: HarnessManifest = {
   model: "model-a",
   systemPrompt: "prompt-a",
   execution: { maxTurns: 8 },
+  skills: [],
+  contextPolicy: "full",
 };
 
 const promptFactor: FactorDefinition<string> = { name: "systemPrompt", baselineValue: "prompt-a", candidateValue: "prompt-b" };
@@ -64,4 +66,24 @@ test("assertControlledFactorialExperiment fails if the expected dimensions never
     () => assertControlledFactorialExperiment(experiment.cells, ["systemPrompt"]),
     UncontrolledFactorialExperimentError,
   );
+});
+
+test("buildFactorialExperiment supports skills x contextPolicy (Milestone 4's factors)", () => {
+  const skillFactor: FactorDefinition = {
+    name: "skills",
+    baselineValue: [{ id: "baseline-skill", content: "do the simple thing" }],
+    candidateValue: [{ id: "verification-skill-v2", content: "do the efficient thing" }],
+  };
+  const contextFactor: FactorDefinition = { name: "contextPolicy", baselineValue: "full", candidateValue: "compact" };
+  const experiment = buildFactorialExperiment("task-1", baseManifest, [skillFactor, contextFactor]);
+
+  assert.equal(experiment.cells.length, 4);
+  assertControlledFactorialExperiment(experiment.cells, ["skills", "contextPolicy"]);
+
+  const cellD = experiment.cells.find((c) => c.factors.skills === "candidate" && c.factors.contextPolicy === "candidate")!;
+  assert.equal(cellD.manifest.skills[0].id, "verification-skill-v2");
+  assert.equal(cellD.manifest.contextPolicy, "compact");
+  for (const cell of experiment.cells) {
+    assert.equal(cell.manifest.systemPrompt, baseManifest.systemPrompt, "systemPrompt must stay identical across all four cells");
+  }
 });

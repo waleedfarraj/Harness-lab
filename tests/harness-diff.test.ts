@@ -12,6 +12,8 @@ function manifest(overrides: Partial<HarnessManifest> = {}): HarnessManifest {
     model: "model-a",
     systemPrompt: "prompt-a",
     execution: { maxTurns: 8 },
+    skills: [],
+    contextPolicy: "full",
     ...overrides,
   };
 }
@@ -48,4 +50,22 @@ test("assertControlledExperiment fails when the expected dimension does not actu
   const a = manifest();
   const b = manifest();
   assert.throws(() => assertControlledExperiment(a, b, ["systemPrompt"]), UncontrolledExperimentError);
+});
+
+test("diffManifests detects a skills-only change", () => {
+  const a = manifest({ skills: [{ id: "s1", content: "do x" }] });
+  const b = manifest({ skills: [{ id: "s2", content: "do y" }] });
+  assert.deepEqual(diffManifests(a, b), ["skills"]);
+});
+
+test("diffManifests treats identical skills arrays (different object identity) as unchanged", () => {
+  const a = manifest({ skills: [{ id: "s1", content: "do x" }] });
+  const b = manifest({ skills: [{ id: "s1", content: "do x" }] });
+  assert.deepEqual(diffManifests(a, b), []);
+});
+
+test("diffManifests detects a contextPolicy-only change", () => {
+  const a = manifest({ contextPolicy: "full" });
+  const b = manifest({ contextPolicy: "compact" });
+  assert.deepEqual(diffManifests(a, b), ["contextPolicy"]);
 });
