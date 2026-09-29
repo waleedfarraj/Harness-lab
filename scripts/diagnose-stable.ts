@@ -1,13 +1,17 @@
-// Milestone 7 stable diagnosis run: the same 4 changed harness dimensions as
-// Milestone 6 (skills, contextPolicy, systemPrompt, execution.maxTurns), but
-// every configuration is now backed by 2-3 independent runs instead of one,
-// and the adaptive planner can choose to replicate an unstable configuration
-// instead of always trying something new. Specifically revisits the
-// discrepancy Milestone 6 found (skills x contextPolicy interaction in one
-// live run, contextPolicy main effect in another).
+// Budget-aware stable diagnosis run: same task, same 4 changed harness
+// dimensions (skills, contextPolicy, systemPrompt, execution.maxTurns), same
+// shared Nebius Sandbox checkpoint approach as Milestone 7. Uses Milestone 9's
+// default planner (src/lib/diagnosis/stable-planner.ts's `selectNextAction`):
+// every diagnostic configuration gets exactly ONE exploratory run first (not
+// immediate replication to minRuns); a reserved confirmation budget is held
+// back for confirming decision-critical configurations; and exploration
+// ranking additionally weighs separator rarity (see stability.ts's
+// `computeSeparatorRarity`) and a bounded look-ahead against leaving a
+// surviving hypothesis pair with no budget left to resolve it — see
+// stable-planner.ts's doc comment for the exact priority order.
 //
 // Hard budget: maxTotalRuns=10 real coding-agent executions total (baseline
-// + candidate + every diagnostic run/replicate), plus exactly 1 real
+// + candidate + every exploratory/confirmation run), plus exactly 1 real
 // Nemotron explanation call once the classification is fixed. Run it
 // deliberately, not in a loop; do not auto-retry on a surprising result.
 import path from "node:path";
@@ -18,9 +22,9 @@ import { baselineV1 } from "../src/lib/harness/manifests/baseline-v1";
 import { baselineSkill } from "../src/lib/harness/skills/baseline-skill";
 import { verificationSkillV2 } from "../src/lib/harness/skills/verification-skill-v2";
 import type { HarnessManifest } from "../src/lib/harness/types";
-import type { ConfigurationAggregate } from "../src/lib/diagnosis/types";
+import type { ConfigurationAggregate, ReplicationPolicy } from "../src/lib/diagnosis/types";
 
-const REPLICATION = { minRunsPerConfiguration: 2, maxRunsPerConfiguration: 3, maxTotalRuns: 10 };
+const REPLICATION: ReplicationPolicy = { minRunsPerConfiguration: 2, maxRunsPerConfiguration: 3, maxTotalRuns: 10, reservedConfirmationRuns: 2 };
 
 const baseline: HarnessManifest = {
   ...baselineV1,
@@ -36,7 +40,7 @@ const candidate: HarnessManifest = {
   name: "verification-skill-v2 + compact-context + tone-only-prompt + maxTurns=9",
   skills: [verificationSkillV2],
   contextPolicy: "compact",
-  // Same verified-benign distractor as Milestone 6's corrected version: tone/closing-format only,
+  // Same verified-benign distractor as Milestone 7's corrected version: tone/closing-format only,
   // the read/file-access guidance sentence is byte-for-byte identical to baselineV1's.
   systemPrompt: [
     "You are a meticulous senior software engineer working inside a small, isolated Git repository.",
@@ -60,7 +64,7 @@ function printAggregate(agg: ConfigurationAggregate) {
 }
 
 async function main() {
-  console.log("HarnessLab Stable Diagnosis (Milestone 7)\n");
+  console.log("HarnessLab Stable Diagnosis (Milestone 9 planner)\n");
   console.log(`Task: ${discountApplyTask.id}`);
   console.log(`Baseline: ${baseline.name}`);
   console.log(`Candidate: ${candidate.name}\n`);
@@ -68,7 +72,8 @@ async function main() {
   console.log("Replication policy:");
   console.log(`  minRunsPerConfiguration = ${REPLICATION.minRunsPerConfiguration}`);
   console.log(`  maxRunsPerConfiguration = ${REPLICATION.maxRunsPerConfiguration}`);
-  console.log(`  maxTotalRuns = ${REPLICATION.maxTotalRuns} (hard cap, includes baseline/candidate/replicates)\n`);
+  console.log(`  maxTotalRuns = ${REPLICATION.maxTotalRuns} (hard cap, includes baseline/candidate/exploration/confirmation)`);
+  console.log(`  reservedConfirmationRuns = ${REPLICATION.reservedConfirmationRuns} (never spent on plain exploration)\n`);
   console.log(`Maximum possible live coding-agent runs this call could make: ${REPLICATION.maxTotalRuns}`);
   console.log("Plus exactly 1 Nemotron mechanism-explanation call, once the classification is fixed.\n");
 
@@ -93,18 +98,15 @@ async function main() {
   console.log("Planner:");
   console.log("────────────────\n");
   diagnosis.steps.forEach((s) => {
-    console.log(`${s.action === "replicate" ? "Replicating" : "Testing"} ${s.bits}`);
-    console.log(`run ${s.aggregateAfter.runs.length}: ${s.runResult.success ? "PASS" : "FAIL"}`);
+    console.log(`${s.action === "explore" ? "Exploring" : "Confirming"} ${s.bits} (run ${s.aggregateAfter.runs.length}, budget remaining before this run: ${s.remainingRunBudget}, reserved: ${s.reservedConfirmationRuns})`);
+    console.log(`result: ${s.runResult.success ? "PASS" : "FAIL"}`);
     console.log(`Why: ${s.whySelected}`);
-    if (s.aggregateAfter.stability === "unstable" && s.aggregateAfter.runs.length < diagnosis.replicationPolicy.maxRunsPerConfiguration) {
-      console.log("Configuration unstable. Replicating next...");
-    } else {
-      console.log(`failure rate: ${(s.aggregateAfter.failureRate * 100).toFixed(1)}%  (${s.aggregateAfter.stability})`);
-    }
+    console.log(`evidence maturity: ${s.aggregateAfter.evidenceMaturity}  failure rate: ${(s.aggregateAfter.failureRate * 100).toFixed(1)}%  decisionCriticality: ${s.decisionCriticality}`);
     if (s.hypothesesRejected.length > 0) {
-      console.log("Rejected:");
+      console.log("Confirmed-rejected:");
       for (const h of s.hypothesesRejected) console.log(`  ✕ ${h.id}`);
     }
+    console.log(`Provisional leading hypotheses: ${s.provisionalHypothesesAfter.filter((h) => h.status !== "rejected").map((h) => h.id).join(", ") || "(none)"}`);
     console.log("");
   });
 
@@ -127,7 +129,8 @@ async function main() {
   }
 
   console.log(`\nTotal coding-agent runs: ${diagnosis.totalCodingRuns}`);
-  console.log(`Replicate runs: ${diagnosis.replicateRunCount}`);
+  console.log(`Exploratory runs: ${diagnosis.exploratoryRunCount}`);
+  console.log(`Confirmation runs: ${diagnosis.confirmationRunCount}`);
   console.log(`Search configurations visited: ${diagnosis.configurationsVisited} / ${diagnosis.exhaustiveConfigurations}`);
   console.log(`Configurations avoided: ${diagnosis.configurationsAvoided}`);
   console.log(`Search-space reduction: ${diagnosis.searchSpaceReductionPct}%`);
@@ -154,7 +157,7 @@ async function main() {
   console.log("\nSandbox:");
   console.log(`  shared base checkpoint: ${diagnosis.sharedBaseCheckpoint}`);
 
-  console.log("\nComparison with previous diagnosis runs of this task:");
+  console.log("\nComparison with previous diagnosis ATTEMPTS for this task (each attempt may itself contain many coding-agent runs — this is not a coding-run count):");
   console.log(formatDiagnosisAgreement(summarizeDiagnosisAgreement(discountApplyTask.id)));
 
   console.log("\nFull evidence:");

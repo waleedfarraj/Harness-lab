@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { aggregateOutcome, buildAggregate, classifyStability, evaluateAggregateHypotheses, needsMoreRuns } from "../src/lib/diagnosis/stability";
+import {
+  aggregateOutcome,
+  buildAggregate,
+  classifyStability,
+  computeEvidenceMaturity,
+  decisionCriticality,
+  evaluateAggregateHypotheses,
+  evaluateProvisionalHypotheses,
+  needsMoreRuns,
+  provisionalOutcome,
+} from "../src/lib/diagnosis/stability";
+import { buildHypothesisSpace } from "../src/lib/diagnosis/hypotheses";
 import type { ConfigurationAggregate } from "../src/lib/diagnosis/types";
 import type { ExperimentResult } from "../src/lib/experiments/types";
 import type { HarnessDimension } from "../src/lib/harness/types";
@@ -97,14 +108,22 @@ test("buildAggregate: computes pass/fail counts, rates, termination reasons, and
   assert.equal(agg.stability, "unstable"); // 2/3 failure rate, per the deliberate threshold gap
 });
 
-function aggregateOf(bits: string, configuration: ConfigurationAggregate["configuration"], label: string, stability: ConfigurationAggregate["stability"], failureRate = 0): ConfigurationAggregate {
+function aggregateOf(
+  bits: string,
+  configuration: ConfigurationAggregate["configuration"],
+  label: string,
+  stability: ConfigurationAggregate["stability"],
+  failureRate = 0,
+  passCount = 0,
+  failCount = 0,
+): ConfigurationAggregate {
   return {
     configurationVector: bits,
     configuration,
     label,
     runs: [],
-    passCount: 0,
-    failCount: 0,
+    passCount,
+    failCount,
     passRate: 1 - failureRate,
     failureRate,
     terminationReasons: {},
@@ -112,6 +131,8 @@ function aggregateOf(bits: string, configuration: ConfigurationAggregate["config
     meanOutputTokens: 0,
     meanLatencyMs: 0,
     stability,
+    evidenceMaturity: stability === "unstable" ? "unstable" : "replicated",
+    isDecisionCritical: false,
   };
 }
 
@@ -159,4 +180,102 @@ test("evaluateAggregateHypotheses: a decisively-resolved interaction cell resolv
   const remaining = hypotheses.filter((h) => h.status !== "rejected");
   assert.equal(remaining.length, 1);
   assert.equal(remaining[0].type, "interaction");
+});
+
+// --- Milestone 8: evidence maturity, provisional lean, decision criticality ---
+
+test("computeEvidenceMaturity: fewer than minRuns is always 'provisional', regardless of the single outcome", () => {
+  assert.equal(computeEvidenceMaturity(0, 2, "unstable"), "provisional");
+  assert.equal(computeEvidenceMaturity(1, 2, "unstable"), "provisional");
+});
+
+test("computeEvidenceMaturity: >= minRuns with a decisive stability is 'replicated'", () => {
+  assert.equal(computeEvidenceMaturity(2, 2, "mostly_pass"), "replicated");
+  assert.equal(computeEvidenceMaturity(2, 2, "mostly_fail"), "replicated");
+  assert.equal(computeEvidenceMaturity(3, 2, "mostly_pass"), "replicated");
+});
+
+test("computeEvidenceMaturity: >= minRuns but genuinely disagreeing is 'unstable', distinct from 'provisional'", () => {
+  assert.equal(computeEvidenceMaturity(2, 2, "unstable"), "unstable");
+  assert.equal(computeEvidenceMaturity(3, 2, "unstable"), "unstable");
+});
+
+test("provisionalOutcome: a single run is trivially unanimous (its own outcome), never tied", () => {
+  assert.equal(provisionalOutcome({ passCount: 1, failCount: 0 }), true);
+  assert.equal(provisionalOutcome({ passCount: 0, failCount: 1 }), false);
+});
+
+test("provisionalOutcome: majority lean once there are more runs, even if `stability` would still call it unstable", () => {
+  // 2 pass / 1 fail: classifyStability(2,1,2) is "unstable" (see the 1/3 threshold gap), but the
+  // PROVISIONAL layer still has a usable majority lean toward PASS.
+  assert.equal(provisionalOutcome({ passCount: 2, failCount: 1 }), true);
+  assert.equal(provisionalOutcome({ passCount: 1, failCount: 2 }), false);
+});
+
+test("provisionalOutcome: an exact tie (including 0/0) has no lean at all", () => {
+  assert.equal(provisionalOutcome({ passCount: 0, failCount: 0 }), null);
+  assert.equal(provisionalOutcome({ passCount: 1, failCount: 1 }), null);
+});
+
+test("decisionCriticality: 0 when a configuration's prediction doesn't distinguish any pair of hypotheses", () => {
+  const [main1] = buildHypothesisSpace(["skills"]);
+  assert.equal(decisionCriticality({ skills: "baseline" }, [main1]), 0, "a single hypothesis has no pairs to separate");
+});
+
+test("decisionCriticality: 1 for the literal isolating contrast between exactly two disagreeing hypotheses", () => {
+  const space = buildHypothesisSpace(DIMS2); // main:skills, main:contextPolicy, interaction
+  const mainSkills = space.find((h) => h.id === "main_effect:skills")!;
+  const interaction = space.find((h) => h.type === "interaction")!;
+  // skills=candidate, contextPolicy=baseline: main:skills predicts FAIL, interaction predicts PASS (not both candidate) -> disagree.
+  assert.equal(decisionCriticality({ skills: "candidate", contextPolicy: "baseline" }, [mainSkills, interaction]), 1);
+  // skills=baseline, contextPolicy=baseline: both predict PASS -> agree, criticality 0.
+  assert.equal(decisionCriticality({ skills: "baseline", contextPolicy: "baseline" }, [mainSkills, interaction]), 0);
+});
+
+test("decisionCriticality: counts every disagreeing pair among more than two hypotheses", () => {
+  const space = buildHypothesisSpace(DIMS2); // 3 hypotheses total: C(3,2)=3 possible pairs
+  // skills=candidate, contextPolicy=baseline: main:skills->FAIL, main:contextPolicy->PASS, interaction->PASS.
+  // Disagreeing pairs: (main:skills, main:contextPolicy) and (main:skills, interaction) = 2. (main:contextPolicy, interaction) agree.
+  assert.equal(decisionCriticality({ skills: "candidate", contextPolicy: "baseline" }, space), 2);
+});
+
+test("evaluateProvisionalHypotheses: a single-run 'provisional' aggregate DOES narrow the provisional-remaining set", () => {
+  const aggregates = [
+    aggregateOf("00", { skills: "baseline", contextPolicy: "baseline" }, "baseline", "mostly_pass", 0, 2, 0),
+    aggregateOf("11", { skills: "candidate", contextPolicy: "candidate" }, "candidate", "mostly_fail", 1, 0, 2),
+    // Single run, provisional: passCount=1, failCount=0 -> provisionalOutcome=true (lean PASS), even though
+    // classifyStability(1,0,2) would be "unstable" (insufficient) and contributes nothing to the CONFIRMED layer.
+    { ...aggregateOf("10", { skills: "candidate", contextPolicy: "baseline" }, "isolate-skills", "unstable", 0, 1, 0), evidenceMaturity: "provisional" as const },
+  ];
+
+  const confirmed = evaluateAggregateHypotheses(DIMS2, aggregates);
+  const provisional = evaluateProvisionalHypotheses(DIMS2, aggregates);
+
+  // Confirmed layer: the single-run "10" aggregate contributes nothing -> all 3 hypotheses still possible.
+  assert.equal(confirmed.filter((h) => h.status !== "rejected").length, 3);
+
+  // Provisional layer: "10" leans PASS (skills=candidate, contextPolicy=baseline observed PASS), which
+  // contradicts main_effect:skills (predicts FAIL there) -> provisionally rejected, narrowing to 2.
+  const provisionalRemaining = provisional.filter((h) => h.status !== "rejected");
+  assert.equal(provisionalRemaining.length, 2);
+  assert.ok(!provisionalRemaining.some((h) => h.id === "main_effect:skills"));
+});
+
+test("evaluateProvisionalHypotheses: a later run overturning a single-run lean is not a permanent erasure — it can return to 'possible'", () => {
+  const afterOneRun = [
+    aggregateOf("00", { skills: "baseline", contextPolicy: "baseline" }, "baseline", "mostly_pass", 0, 2, 0),
+    aggregateOf("11", { skills: "candidate", contextPolicy: "candidate" }, "candidate", "mostly_fail", 1, 0, 2),
+    { ...aggregateOf("10", { skills: "candidate", contextPolicy: "baseline" }, "isolate-skills", "unstable", 0, 1, 0), evidenceMaturity: "provisional" as const },
+  ];
+  const provisionalRejectedFirst = evaluateProvisionalHypotheses(DIMS2, afterOneRun).find((h) => h.id === "main_effect:skills")!;
+  assert.equal(provisionalRejectedFirst.status, "rejected");
+
+  // A second run for "10" comes back FAIL, flipping the tally to 1 pass / 1 fail -> tied -> no lean at all.
+  const afterTwoRuns = [
+    afterOneRun[0],
+    afterOneRun[1],
+    { ...aggregateOf("10", { skills: "candidate", contextPolicy: "baseline" }, "isolate-skills", "unstable", 0.5, 1, 1), evidenceMaturity: "unstable" as const },
+  ];
+  const provisionalAfterTwo = evaluateProvisionalHypotheses(DIMS2, afterTwoRuns).find((h) => h.id === "main_effect:skills")!;
+  assert.equal(provisionalAfterTwo.status, "possible", "the earlier provisional rejection was not permanent — new evidence un-rejected it");
 });

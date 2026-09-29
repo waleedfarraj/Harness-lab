@@ -29,7 +29,7 @@ const task: CodingTask = {
 const baseline: HarnessManifest = { ...baselineV1, id: "diag-baseline", name: "diag-baseline", skills: [baselineSkill], contextPolicy: "full" };
 const candidate: HarnessManifest = { ...baselineV1, id: "diag-candidate", name: "diag-candidate", skills: [verificationSkillV2], contextPolicy: "compact" };
 
-const POLICY: ReplicationPolicy = { minRunsPerConfiguration: 2, maxRunsPerConfiguration: 3, maxTotalRuns: 20 };
+const POLICY: ReplicationPolicy = { minRunsPerConfiguration: 2, maxRunsPerConfiguration: 3, maxTotalRuns: 20, reservedConfirmationRuns: 2 };
 
 function fakeResult(success: boolean, manifestId: string): ExperimentResult {
   return {
@@ -194,7 +194,7 @@ test("contradictory repeated evidence triggers a 3rd replicate run, and truly am
 
 test("total-run budget enforcement: a budget too small for any diagnostic run stops after baseline+candidate, inconclusive with remaining hypotheses reported", async (t) => {
   const fake = fakeRunner();
-  const tightPolicy: ReplicationPolicy = { minRunsPerConfiguration: 2, maxRunsPerConfiguration: 3, maxTotalRuns: 4 };
+  const tightPolicy: ReplicationPolicy = { minRunsPerConfiguration: 2, maxRunsPerConfiguration: 3, maxTotalRuns: 4, reservedConfirmationRuns: 2 };
   const result = await runStableDiagnosis(
     { task, baseline, candidate, replication: tightPolicy },
     {
@@ -213,8 +213,8 @@ test("total-run budget enforcement: a budget too small for any diagnostic run st
 
 test("evidence quality: high when every visited configuration resolves decisively, low when the diagnosis itself is inconclusive", () => {
   const decisive: ConfigurationAggregate[] = [
-    { configurationVector: "00", configuration: {}, label: "baseline", runs: [], passCount: 2, failCount: 0, passRate: 1, failureRate: 0, terminationReasons: {}, meanInputTokens: 0, meanOutputTokens: 0, meanLatencyMs: 0, stability: "mostly_pass" },
-    { configurationVector: "11", configuration: {}, label: "candidate", runs: [], passCount: 0, failCount: 2, passRate: 0, failureRate: 1, terminationReasons: {}, meanInputTokens: 0, meanOutputTokens: 0, meanLatencyMs: 0, stability: "mostly_fail" },
+    { configurationVector: "00", configuration: {}, label: "baseline", runs: new Array(2).fill(null), passCount: 2, failCount: 0, passRate: 1, failureRate: 0, terminationReasons: {}, meanInputTokens: 0, meanOutputTokens: 0, meanLatencyMs: 0, stability: "mostly_pass", evidenceMaturity: "replicated", isDecisionCritical: false },
+    { configurationVector: "11", configuration: {}, label: "candidate", runs: new Array(2).fill(null), passCount: 0, failCount: 2, passRate: 0, failureRate: 1, terminationReasons: {}, meanInputTokens: 0, meanOutputTokens: 0, meanLatencyMs: 0, stability: "mostly_fail", evidenceMaturity: "replicated", isDecisionCritical: false },
   ];
   const highQuality = computeStability(POLICY, decisive, "main_effect");
   assert.equal(highQuality.evidenceQuality, "high");
@@ -222,7 +222,7 @@ test("evidence quality: high when every visited configuration resolves decisivel
 
   const withUnstable: ConfigurationAggregate[] = [
     ...decisive,
-    { configurationVector: "10", configuration: {}, label: "isolate", runs: [], passCount: 1, failCount: 1, passRate: 0.5, failureRate: 0.5, terminationReasons: {}, meanInputTokens: 0, meanOutputTokens: 0, meanLatencyMs: 0, stability: "unstable" },
+    { configurationVector: "10", configuration: {}, label: "isolate", runs: new Array(2).fill(null), passCount: 1, failCount: 1, passRate: 0.5, failureRate: 0.5, terminationReasons: {}, meanInputTokens: 0, meanOutputTokens: 0, meanLatencyMs: 0, stability: "unstable", evidenceMaturity: "unstable", isDecisionCritical: false },
   ];
   const lowQuality = computeStability(POLICY, withUnstable, "inconclusive");
   assert.equal(lowQuality.evidenceQuality, "low");
@@ -233,10 +233,22 @@ test("evidence quality: high when every visited configuration resolves decisivel
   assert.equal(moderateQuality.evidenceQuality, "moderate");
 });
 
+test("evidence quality: a merely 'provisional' (single-run, unconfirmed but not disagreeing) configuration is NOT treated as unstable", () => {
+  const aggregates: ConfigurationAggregate[] = [
+    { configurationVector: "00", configuration: {}, label: "baseline", runs: new Array(2).fill(null), passCount: 2, failCount: 0, passRate: 1, failureRate: 0, terminationReasons: {}, meanInputTokens: 0, meanOutputTokens: 0, meanLatencyMs: 0, stability: "mostly_pass", evidenceMaturity: "replicated", isDecisionCritical: false },
+    { configurationVector: "11", configuration: {}, label: "candidate", runs: new Array(2).fill(null), passCount: 0, failCount: 2, passRate: 0, failureRate: 1, terminationReasons: {}, meanInputTokens: 0, meanOutputTokens: 0, meanLatencyMs: 0, stability: "mostly_fail", evidenceMaturity: "replicated", isDecisionCritical: false },
+    // Explored once, turned out not to be decision-critical, correctly left at "provisional" forever — this is expected, efficient behavior, not a quality problem.
+    { configurationVector: "10", configuration: {}, label: "explored-but-irrelevant", runs: new Array(1).fill(null), passCount: 1, failCount: 0, passRate: 1, failureRate: 0, terminationReasons: {}, meanInputTokens: 0, meanOutputTokens: 0, meanLatencyMs: 0, stability: "unstable", evidenceMaturity: "provisional", isDecisionCritical: false },
+  ];
+  const quality = computeStability(POLICY, aggregates, "main_effect");
+  assert.equal(quality.evidenceQuality, "high", "a provisional-forever exploration must not be penalized as instability");
+  assert.equal(quality.unstableConfigurations.length, 0);
+});
+
 test("repeatedConfigurations counts only configurations that needed MORE than minRuns", () => {
   const aggregates: ConfigurationAggregate[] = [
-    { configurationVector: "00", configuration: {}, label: "a", runs: new Array(2).fill(null), passCount: 2, failCount: 0, passRate: 1, failureRate: 0, terminationReasons: {}, meanInputTokens: 0, meanOutputTokens: 0, meanLatencyMs: 0, stability: "mostly_pass" },
-    { configurationVector: "11", configuration: {}, label: "b", runs: new Array(3).fill(null), passCount: 0, failCount: 3, passRate: 0, failureRate: 1, terminationReasons: {}, meanInputTokens: 0, meanOutputTokens: 0, meanLatencyMs: 0, stability: "mostly_fail" },
+    { configurationVector: "00", configuration: {}, label: "a", runs: new Array(2).fill(null), passCount: 2, failCount: 0, passRate: 1, failureRate: 0, terminationReasons: {}, meanInputTokens: 0, meanOutputTokens: 0, meanLatencyMs: 0, stability: "mostly_pass", evidenceMaturity: "replicated", isDecisionCritical: false },
+    { configurationVector: "11", configuration: {}, label: "b", runs: new Array(3).fill(null), passCount: 0, failCount: 3, passRate: 0, failureRate: 1, terminationReasons: {}, meanInputTokens: 0, meanOutputTokens: 0, meanLatencyMs: 0, stability: "mostly_fail", evidenceMaturity: "replicated", isDecisionCritical: false },
   ];
   const stability = computeStability(POLICY, aggregates, "main_effect");
   assert.equal(stability.repeatedConfigurations, 1, "only the 3-run configuration needed replication beyond minRuns=2");
@@ -368,4 +380,113 @@ test("explainFn is called exactly once with the diagnosis already fixed", async 
 
   assert.equal(explainCallCount, 1);
   assert.equal(result.mechanismExplanation, "explanation text");
+});
+
+// --- Milestone 8: budget-aware planner correctness ---
+
+const DIMS4_BASELINE: HarnessManifest = { ...baselineV1, id: "diag4-baseline", name: "diag4-baseline", skills: [baselineSkill], contextPolicy: "full" };
+const DIMS4_CANDIDATE: HarnessManifest = {
+  ...baselineV1,
+  id: "diag4-candidate",
+  name: "diag4-candidate",
+  skills: [verificationSkillV2],
+  contextPolicy: "compact",
+  systemPrompt: "a different, but individually-safe, system prompt",
+  execution: { maxTurns: 9 },
+};
+const M7_BUDGET_POLICY: ReplicationPolicy = { minRunsPerConfiguration: 2, maxRunsPerConfiguration: 3, maxTotalRuns: 10, reservedConfirmationRuns: 2 };
+
+/** Deterministic ground truth keyed by bit-vector, decoded from the manifest id (`diagnostic-XXXX`, or the fixed baseline/candidate ids). No stochasticity — the point is to test planner correctness, not replication behavior. */
+function groundTruthRunExperimentFn(baselineId: string, candidateId: string, dims: number, predicate: (bits: string) => boolean) {
+  return async (_t: CodingTask, manifest: HarnessManifest): Promise<ExperimentResult> => {
+    const bits = manifest.id === baselineId ? "0".repeat(dims) : manifest.id === candidateId ? "1".repeat(dims) : manifest.id.replace("diagnostic-", "");
+    return fakeResult(predicate(bits), manifest.id);
+  };
+}
+
+// changedDimensions for DIMS4_BASELINE/DIMS4_CANDIDATE is ordered [systemPrompt, execution.maxTurns, skills,
+// contextPolicy] (diffManifests' own fixed check order) -> skills is bit index 2, contextPolicy is index 3.
+function skillsAndContextBothCandidate(bits: string): boolean {
+  return bits[2] === "1" && bits[3] === "1";
+}
+
+test("Milestone 8 vs Milestone 7: the exact skills x contextPolicy interaction pattern (4 dims, systemPrompt/maxTurns as benign distractors) never produces a WRONG confirmed diagnosis, and never exceeds the 10-run budget", async (t) => {
+  const fake = fakeRunner();
+  // Ground truth: fails iff skills=candidate AND contextPolicy=candidate, regardless of systemPrompt/execution.maxTurns
+  // — the exact mechanism from Milestones 4-7, plus two benign distractors.
+  //
+  // IMPORTANT: this does NOT assert the diagnosis resolves to "interaction" every time. With 10 hypotheses in
+  // play and only 10 runs of budget, exploration alone can legitimately consume the whole budget across several
+  // genuinely-relevant-looking configurations before ever reaching the one isolating contrast between the last
+  // two survivors (main_effect:skills vs interaction:skills+contextPolicy) — this is exactly the information-
+  // theoretic limitation Milestone 8's spec documents (section 12), and this reproduction confirmed it happens
+  // even with the reserved-confirmation-budget fix in place (which correctly protects against wasting runs on
+  // NON-decisive configs, but cannot manufacture runs that were never budgeted). What Milestone 8 guarantees is
+  // narrower and still meaningful: it never CONFIRMS the wrong mechanism, and if it can't resolve within budget,
+  // it says so honestly rather than guessing.
+  const result = await runStableDiagnosis(
+    { task, baseline: DIMS4_BASELINE, candidate: DIMS4_CANDIDATE, replication: M7_BUDGET_POLICY },
+    {
+      runner: fake.runner,
+      skipExplanation: true,
+      runExperimentFn: groundTruthRunExperimentFn("diag4-baseline", "diag4-candidate", 4, (bits) => !skillsAndContextBothCandidate(bits)),
+    },
+  );
+  t.after(() => fs.rmSync(diagnosisEvidencePath(result.diagnosisId), { force: true }));
+
+  assert.ok(result.totalCodingRuns <= 10, `must stay within the 10-run budget, used ${result.totalCodingRuns}`);
+
+  if (result.diagnosis.type === "inconclusive") {
+    // Must not have silently eliminated the true mechanism — it should still be among the reported alternatives.
+    assert.match(result.diagnosis.reason, /interaction:skills\+contextPolicy/);
+    assert.equal(result.stability.evidenceQuality, "low");
+  } else {
+    // If it DID resolve, it must have resolved CORRECTLY — never a false positive on an unrelated dimension.
+    assert.deepEqual(result.diagnosis, { type: "interaction", factors: ["skills", "contextPolicy"] });
+    assert.notEqual(result.stability.evidenceQuality, "low");
+  }
+});
+
+test("Milestone 8 invariant: every 'confirm' step is decision-critical for the CONFIRMED-remaining hypotheses at the moment it was selected — the reserved budget is never spent on something irrelevant", async (t) => {
+  const fake = fakeRunner();
+  const result = await runStableDiagnosis(
+    { task, baseline, candidate, replication: POLICY },
+    {
+      runner: fake.runner,
+      skipExplanation: true,
+      runExperimentFn: scriptedRunExperimentFn({
+        "diag-baseline": [true, true],
+        "diag-candidate": [false, false],
+        "diagnostic-10": [false, true, false],
+        "diagnostic-01": [false, true, false],
+      }),
+    },
+  );
+  t.after(() => fs.rmSync(diagnosisEvidencePath(result.diagnosisId), { force: true }));
+
+  const confirmSteps = result.steps.filter((s) => s.action === "confirm");
+  assert.ok(confirmSteps.length > 0, "this scenario should have triggered at least one confirm step");
+  for (const step of confirmSteps) {
+    assert.ok(step.decisionCriticality > 0, `confirm step ${step.step} (${step.bits}) must have been decision-critical when selected`);
+  }
+});
+
+test("Milestone 8: a genuinely under-budgeted 4-dim scenario stays honestly INCONCLUSIVE rather than forcing a wrong answer", async (t) => {
+  const fake = fakeRunner();
+  // A tiny budget (6 total: baseline 2 + candidate 2 + only 2 more) cannot possibly gather enough decisive
+  // evidence to resolve a 10-hypothesis space beyond the trivial regression confirmation.
+  const tinyPolicy: ReplicationPolicy = { minRunsPerConfiguration: 2, maxRunsPerConfiguration: 3, maxTotalRuns: 6, reservedConfirmationRuns: 1 };
+  const result = await runStableDiagnosis(
+    { task, baseline: DIMS4_BASELINE, candidate: DIMS4_CANDIDATE, replication: tinyPolicy },
+    {
+      runner: fake.runner,
+      skipExplanation: true,
+      runExperimentFn: groundTruthRunExperimentFn("diag4-baseline", "diag4-candidate", 4, (bits) => !skillsAndContextBothCandidate(bits)),
+    },
+  );
+  t.after(() => fs.rmSync(diagnosisEvidencePath(result.diagnosisId), { force: true }));
+
+  assert.ok(result.totalCodingRuns <= 6);
+  assert.equal(result.diagnosis.type, "inconclusive");
+  assert.ok((result.diagnosis as { reason: string }).reason.length > 0);
 });

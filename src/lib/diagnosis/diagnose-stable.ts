@@ -13,7 +13,7 @@ import { cellPatternFor, manifestForConfiguration } from "./diagnose";
 import { buildHypothesisSpace, UnsupportedDiagnosisScopeError } from "./hypotheses";
 import { classifyDiagnosis } from "./planner";
 import { selectNextAction } from "./stable-planner";
-import { buildAggregate, evaluateAggregateHypotheses, needsMoreRuns } from "./stability";
+import { buildAggregate, decisionCriticality, evaluateAggregateHypotheses, evaluateProvisionalHypotheses, needsMoreRuns } from "./stability";
 import { detectFixedMechanisms } from "./mechanism-evidence";
 import { explainStableDiagnosis } from "./explain-stable";
 import type {
@@ -21,6 +21,7 @@ import type {
   ConfigurationAggregate,
   DiagnosisHypothesis,
   DiagnosisStability,
+  ReplicationPolicy,
   StableDiagnosisRequest,
   StableDiagnosisResult,
   StablePlannerStep,
@@ -43,14 +44,34 @@ export class RunBudgetExhaustedError extends Error {
 }
 
 /**
- * Milestone 7: the same adaptive diagnosis as diagnose.ts, but every
- * configuration is backed by 2-3 independent runs instead of 1. Baseline and
- * candidate are each resolved via the sequential replication policy before
- * regression is even evaluated; the adaptive loop then chooses, before every
- * additional run, whether to replicate an unstable configuration or try a
- * new one. Never fabricates statistical confidence — an aggregate that
- * cannot be resolved within `maxRunsPerConfiguration` stays "unstable" and
- * is honestly excluded from hypothesis elimination.
+ * Recomputes `isDecisionCritical` on every aggregate against the current
+ * CONFIRMED-remaining hypothesis set. Returns new aggregate objects (never
+ * mutates in place — every snapshot stays frozen, per the Milestone 7 fix).
+ * Called once per planner step, right after hypotheses are re-evaluated.
+ */
+function markDecisionCritical(aggregates: ConfigurationAggregate[], confirmedRemaining: DiagnosisHypothesis[]): ConfigurationAggregate[] {
+  return aggregates.map((a) => ({ ...a, isDecisionCritical: decisionCriticality(a.configuration, confirmedRemaining) > 0 }));
+}
+
+/**
+ * Milestone 8: the same adaptive stable diagnosis as Milestone 7, corrected
+ * for budget allocation. Milestone 7 immediately replicated every newly
+ * selected diagnostic configuration to `minRunsPerConfiguration` before
+ * moving on — on a 10-run budget with 3 explored configurations, that alone
+ * consumed the entire budget (2+2+2+2+2=10) before the planner ever reached
+ * the literal isolating contrast needed to finish distinguishing
+ * `main_effect:skills` from `interaction:skills×contextPolicy`.
+ *
+ * Now: baseline/candidate still get their full replication policy up front
+ * (section 1 — establishing the regression is real remains non-negotiable).
+ * But every new DIAGNOSTIC configuration gets exactly ONE exploratory run
+ * first ("provisional" evidence — enough to guide the planner, never enough
+ * to decide the final diagnosis). A separate reserved budget
+ * (`reservedConfirmationRuns`) is held back specifically to CONFIRM whichever
+ * configuration turns out to be decision-critical for the leading
+ * hypotheses, rather than being spent broadly replicating everything that
+ * was merely explored. See stable-planner.ts's `selectNextAction` for the
+ * exact explore-vs-confirm priority order.
  */
 export async function runStableDiagnosis(request: StableDiagnosisRequest, options: RunStableDiagnosisOptions = {}): Promise<StableDiagnosisResult> {
   validateHarnessManifest(request.baseline);
@@ -90,6 +111,7 @@ export async function runStableDiagnosis(request: StableDiagnosisRequest, option
     return result;
   }
 
+  /** Baseline/candidate only — full sequential replication up front, unchanged from Milestone 7. */
   async function resolveConfiguration(bits: string, configuration: CellPattern, label: string, manifest: HarnessManifest): Promise<ConfigurationAggregate> {
     let runs = runsByBits.get(bits) ?? [];
     while (totalRunsUsed < policy.maxTotalRuns) {
@@ -141,7 +163,8 @@ export async function runStableDiagnosis(request: StableDiagnosisRequest, option
         configurationsAvoided,
         searchSpaceReductionPct: Math.round((configurationsAvoided / exhaustiveConfigurations) * 1000) / 10,
         totalCodingRuns: totalRunsUsed,
-        replicateRunCount: totalRunsUsed - configurationsVisited,
+        exploratoryRunCount: 0,
+        confirmationRunCount: 0,
         sharedBaseCheckpoint,
         environmentPreparationMs,
       };
@@ -149,17 +172,21 @@ export async function runStableDiagnosis(request: StableDiagnosisRequest, option
       return result;
     }
 
-    let hypotheses = evaluateAggregateHypotheses(changedDimensions, aggregates);
+    let confirmedHypotheses = evaluateAggregateHypotheses(changedDimensions, aggregates);
+    let provisionalHypotheses = evaluateProvisionalHypotheses(changedDimensions, aggregates);
+    let currentAggregates = markDecisionCritical(aggregates, confirmedHypotheses.filter((h) => h.status !== "rejected"));
     const steps: StablePlannerStep[] = [];
 
     while (totalRunsUsed < policy.maxTotalRuns) {
-      const remaining = hypotheses.filter((h) => h.status !== "rejected");
-      if (remaining.length <= 1) break;
+      const confirmedRemaining = confirmedHypotheses.filter((h) => h.status !== "rejected");
+      if (confirmedRemaining.length <= 1) break;
+      const provisionalRemaining = provisionalHypotheses.filter((h) => h.status !== "rejected");
 
-      const planned = selectNextActionFn(changedDimensions, remaining, aggregates, policy, policy.maxTotalRuns - totalRunsUsed);
+      const remainingRunBudget = policy.maxTotalRuns - totalRunsUsed;
+      const planned = selectNextActionFn(changedDimensions, confirmedRemaining, provisionalRemaining, currentAggregates, policy, remainingRunBudget);
       if (!planned) break;
 
-      const hypothesesBefore = hypotheses;
+      const hypothesesBefore = confirmedHypotheses;
       const step = steps.length + 1;
       const label = changedDimensions.map((d) => `${d}=${planned.configuration[d]}`).join(",");
       const manifest = manifestForConfiguration(request.baseline, request.candidate, changedDimensions, planned.configuration, `diagnostic-${planned.bits}`);
@@ -168,13 +195,15 @@ export async function runStableDiagnosis(request: StableDiagnosisRequest, option
       const runs = runsByBits.get(planned.bits) ?? [];
       const aggregateAfter = buildAggregate(planned.bits, planned.configuration, label, runs, policy.minRunsPerConfiguration);
 
-      const existingIndex = aggregates.findIndex((a) => a.configurationVector === planned.bits);
-      if (existingIndex >= 0) aggregates[existingIndex] = aggregateAfter;
-      else aggregates.push(aggregateAfter);
+      const existingIndex = currentAggregates.findIndex((a) => a.configurationVector === planned.bits);
+      const updatedAggregates = existingIndex >= 0 ? currentAggregates.map((a, i) => (i === existingIndex ? aggregateAfter : a)) : [...currentAggregates, aggregateAfter];
 
-      hypotheses = evaluateAggregateHypotheses(changedDimensions, aggregates);
-      const hypothesesRejected = hypotheses.filter((h, i) => h.status === "rejected" && hypothesesBefore[i].status !== "rejected");
-      const hypothesesRemaining = hypotheses.filter((h) => h.status !== "rejected");
+      confirmedHypotheses = evaluateAggregateHypotheses(changedDimensions, updatedAggregates);
+      provisionalHypotheses = evaluateProvisionalHypotheses(changedDimensions, updatedAggregates);
+      currentAggregates = markDecisionCritical(updatedAggregates, confirmedHypotheses.filter((h) => h.status !== "rejected"));
+
+      const hypothesesRejected = confirmedHypotheses.filter((h, i) => h.status === "rejected" && hypothesesBefore[i].status !== "rejected");
+      const hypothesesRemaining = confirmedHypotheses.filter((h) => h.status !== "rejected");
 
       steps.push({
         step,
@@ -182,23 +211,34 @@ export async function runStableDiagnosis(request: StableDiagnosisRequest, option
         bits: planned.bits,
         configuration: planned.configuration,
         informationScore: planned.informationScore,
+        decisionCriticality: planned.decisionCriticality,
+        separatorRarityScore: planned.separatorRarityScore,
+        rarePairsSeparated: planned.rarePairsSeparated,
+        lookaheadRisk: planned.lookaheadRisk,
         whySelected: planned.whySelected,
+        remainingRunBudget,
+        reservedConfirmationRuns: policy.reservedConfirmationRuns,
         hypothesesBefore,
         runResult,
-        aggregateAfter,
-        hypothesesAfter: hypotheses,
+        // Use the post-markDecisionCritical snapshot (isDecisionCritical correctly set), not the raw buildAggregate() result.
+        aggregateAfter: currentAggregates.find((a) => a.configurationVector === planned.bits)!,
+        provisionalHypothesesAfter: provisionalHypotheses,
+        confirmedHypothesesAfter: confirmedHypotheses,
         hypothesesRejected,
         hypothesesRemaining,
       });
     }
 
-    const diagnosis = classifyDiagnosis(hypotheses);
-    const failingRuns = aggregates.flatMap((a) => a.runs.filter((r) => !r.success));
+    const finalAggregates = currentAggregates; // final snapshot, all isDecisionCritical flags up to date
+    const diagnosis = classifyDiagnosis(confirmedHypotheses);
+    const failingRuns = finalAggregates.flatMap((a) => a.runs.filter((r) => !r.success));
     const fixedMechanismsObserved = [...new Set(failingRuns.flatMap((r) => detectFixedMechanisms(r.evidence.trajectory)))];
 
-    const stability = computeStability(policy, aggregates, diagnosis.type);
-    const configurationsVisited = aggregates.length;
+    const stability = computeStability(policy, finalAggregates, diagnosis.type);
+    const configurationsVisited = finalAggregates.length;
     const configurationsAvoided = exhaustiveConfigurations - configurationsVisited;
+    const exploratoryRunCount = steps.filter((s) => s.action === "explore").length;
+    const confirmationRunCount = steps.filter((s) => s.action === "confirm").length;
 
     const partial: StableDiagnosisResult = {
       diagnosisId: crypto.randomUUID(),
@@ -210,7 +250,7 @@ export async function runStableDiagnosis(request: StableDiagnosisRequest, option
       candidateAggregate,
       regressionDetected: true,
       steps,
-      aggregates,
+      aggregates: finalAggregates,
       diagnosis,
       stability,
       fixedMechanismsObserved,
@@ -220,7 +260,8 @@ export async function runStableDiagnosis(request: StableDiagnosisRequest, option
       configurationsAvoided,
       searchSpaceReductionPct: Math.round((configurationsAvoided / exhaustiveConfigurations) * 1000) / 10,
       totalCodingRuns: totalRunsUsed,
-      replicateRunCount: totalRunsUsed - configurationsVisited,
+      exploratoryRunCount,
+      confirmationRunCount,
       sharedBaseCheckpoint,
       environmentPreparationMs,
     };
@@ -246,11 +287,18 @@ function reasonForNoRegression(baseline: ConfigurationAggregate, candidate: Conf
   return `candidate did not resolve to mostly_fail in this live run (${candidate.stability}, failure rate ${(candidate.failureRate * 100).toFixed(1)}% over ${candidate.runs.length} runs) — stochastic behavior did not reproduce the previously observed failure`;
 }
 
-/** Exported for direct unit testing (see tests/diagnosis-stable.test.ts) — evidence-quality tiers are easiest to verify against synthetic aggregate arrays, not just through a full end-to-end multi-step run. */
-export function computeStability(policy: import("./types").ReplicationPolicy, aggregates: ConfigurationAggregate[], diagnosisType: "main_effect" | "interaction" | "inconclusive"): DiagnosisStability {
+/**
+ * Exported for direct unit testing (see tests/diagnosis-stable.test.ts).
+ * `evidenceQuality` now keys off `evidenceMaturity==="unstable"` (genuinely
+ * disagreeing runs), not merely "provisional" (single-run, under-sampled —
+ * which is now the EXPECTED resting state for configurations that were
+ * explored but turned out not to be decision-critical, and is not itself a
+ * quality problem).
+ */
+export function computeStability(policy: ReplicationPolicy, aggregates: ConfigurationAggregate[], diagnosisType: "main_effect" | "interaction" | "inconclusive"): DiagnosisStability {
   const totalRuns = aggregates.reduce((sum, a) => sum + a.runs.length, 0);
   const repeatedConfigurations = aggregates.filter((a) => a.runs.length > policy.minRunsPerConfiguration).length;
-  const unstableConfigurations = aggregates.filter((a) => a.stability === "unstable").map((a) => a.configurationVector);
+  const unstableConfigurations = aggregates.filter((a) => a.evidenceMaturity === "unstable").map((a) => a.configurationVector);
 
   let evidenceQuality: DiagnosisStability["evidenceQuality"];
   let reason: string;
@@ -258,11 +306,11 @@ export function computeStability(policy: import("./types").ReplicationPolicy, ag
     evidenceQuality = "low";
     reason =
       unstableConfigurations.length > 0
-        ? `${unstableConfigurations.length} of ${aggregates.length} configuration(s) remained unstable across ${totalRuns} total runs (${unstableConfigurations.join(", ")}), which was not enough evidence to uniquely resolve the diagnosis.`
-        : `${aggregates.length} configuration(s) resolved decisively across ${totalRuns} total runs, but more than one hypothesis remained consistent with that evidence.`;
+        ? `${unstableConfigurations.length} of ${aggregates.length} configuration(s) remained unstable (genuinely disagreeing runs) across ${totalRuns} total runs (${unstableConfigurations.join(", ")}), which was not enough evidence to uniquely resolve the diagnosis.`
+        : `${aggregates.length} configuration(s) were visited across ${totalRuns} total runs, but more than one hypothesis remained consistent with the confirmed evidence collected within budget.`;
   } else if (unstableConfigurations.length === 0) {
     evidenceQuality = "high";
-    reason = `Every one of ${aggregates.length} visited configurations resolved decisively (mostly_pass or mostly_fail) across ${totalRuns} total runs.`;
+    reason = `Every configuration that was decision-critical for the final diagnosis reached replicated (confirmed) evidence, across ${totalRuns} total runs; no visited configuration was genuinely unstable.`;
   } else {
     evidenceQuality = "moderate";
     reason = `The diagnosis resolved despite ${unstableConfigurations.length} configuration(s) remaining unstable (${unstableConfigurations.join(", ")}) — that instability was not relevant to distinguishing the winning hypothesis.`;

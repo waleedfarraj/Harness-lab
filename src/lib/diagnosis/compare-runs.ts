@@ -13,7 +13,16 @@ interface StoredDiagnosisShape {
 
 export interface DiagnosisAgreementEntry {
   label: string;
-  count: number;
+  /**
+   * Number of diagnosis ATTEMPTS (i.e. `.harnesslab/diagnoses/*.json` evidence
+   * files) that reached this classification — NOT a count of coding-agent
+   * executions. One diagnosis attempt is one call to `runDiagnosis`/
+   * `runStableDiagnosis` and may itself have consumed anywhere from 2 (an
+   * early single-run M5/M6 diagnosis) to 10+ (a replicated M7/M8 diagnosis)
+   * individual coding-agent runs. See Milestone 8's completion report for
+   * why this distinction matters — an earlier report conflated the two.
+   */
+  diagnosisAttempts: number;
   diagnosisIds: string[];
 }
 
@@ -26,12 +35,18 @@ export function diagnosisLabel(diagnosis: Diagnosis): string {
 
 /**
  * Reads every local diagnosis evidence JSON file for `taskId` (both
- * Milestone 5/6's `DiagnosisResult` and Milestone 7's `StableDiagnosisResult`
+ * Milestone 5/6's `DiagnosisResult` and Milestone 7/8's `StableDiagnosisResult`
  * — both share `taskId` and `diagnosis`, so this works for either) and tallies
- * how often each final classification occurred. Does not build a database;
- * this is purely a read over `.harnesslab/diagnoses/*.json`. Corrupt or
- * unrelated files are skipped, not thrown on, since this directory is meant
- * to be freely browsable evidence, not a strict schema.
+ * how many DIAGNOSIS ATTEMPTS (evidence files) reached each final
+ * classification. Does not build a database; this is purely a read over
+ * `.harnesslab/diagnoses/*.json`. Corrupt or unrelated files are skipped,
+ * not thrown on, since this directory is meant to be freely browsable
+ * evidence, not a strict schema.
+ *
+ * IMPORTANT: this counts diagnosis ATTEMPTS, never coding-agent executions.
+ * A single M7/M8 diagnosis attempt can itself contain 10+ real coding-agent
+ * runs; summing `diagnosisAttempts` across entries is never a valid proxy
+ * for total coding-agent calls made. See `DiagnosisAgreementEntry`.
  */
 export function summarizeDiagnosisAgreement(taskId: string, diagnosesDir: string = DIAGNOSES_DIR): DiagnosisAgreementEntry[] {
   let files: string[];
@@ -52,18 +67,24 @@ export function summarizeDiagnosisAgreement(taskId: string, diagnosesDir: string
     if (!parsed || parsed.taskId !== taskId || !parsed.diagnosis || typeof parsed.diagnosis.type !== "string") continue;
 
     const label = diagnosisLabel(parsed.diagnosis);
-    const entry = counts.get(label) ?? { label, count: 0, diagnosisIds: [] };
-    entry.count += 1;
+    const entry = counts.get(label) ?? { label, diagnosisAttempts: 0, diagnosisIds: [] };
+    entry.diagnosisAttempts += 1;
     entry.diagnosisIds.push(parsed.diagnosisId);
     counts.set(label, entry);
   }
 
-  return [...counts.values()].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+  return [...counts.values()].sort((a, b) => b.diagnosisAttempts - a.diagnosisAttempts || a.label.localeCompare(b.label));
 }
 
-/** Human-readable "2/3 interaction, 1/3 context main effect"-style summary, for CLI/report output. */
+/**
+ * Human-readable "2/3 diagnosis attempts -> interaction"-style summary, for
+ * CLI/report output. Deliberately spells out "diagnosis attempts" rather
+ * than printing bare "X/Y label" — a bare number here was previously
+ * misread as a coding-agent run count in a completion report; see
+ * Milestone 8.
+ */
 export function formatDiagnosisAgreement(entries: DiagnosisAgreementEntry[]): string {
-  const total = entries.reduce((sum, e) => sum + e.count, 0);
-  if (total === 0) return "(no prior diagnosis evidence found for this task)";
-  return entries.map((e) => `${e.count}/${total} ${e.label}`).join("\n");
+  const totalDiagnosisAttempts = entries.reduce((sum, e) => sum + e.diagnosisAttempts, 0);
+  if (totalDiagnosisAttempts === 0) return "(no prior diagnosis evidence found for this task)";
+  return entries.map((e) => `${e.diagnosisAttempts}/${totalDiagnosisAttempts} diagnosis attempts -> ${e.label}`).join("\n");
 }

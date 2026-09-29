@@ -31,10 +31,10 @@ test("summarizeDiagnosisAgreement: tallies only files matching the given taskId,
     const entries = summarizeDiagnosisAgreement("discount-apply-001", dir);
     assert.equal(entries.length, 2);
     assert.equal(entries[0].label, "skills x contextPolicy");
-    assert.equal(entries[0].count, 2);
+    assert.equal(entries[0].diagnosisAttempts, 2);
     assert.deepEqual(entries[0].diagnosisIds.sort(), ["run-1", "run-3"]);
     assert.equal(entries[1].label, "contextPolicy");
-    assert.equal(entries[1].count, 1);
+    assert.equal(entries[1].diagnosisAttempts, 1);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -49,7 +49,7 @@ test("summarizeDiagnosisAgreement: skips corrupt or unrelated JSON files instead
 
     const entries = summarizeDiagnosisAgreement("t", dir);
     assert.equal(entries.length, 1);
-    assert.equal(entries[0].count, 1);
+    assert.equal(entries[0].diagnosisAttempts, 1);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -59,11 +59,11 @@ test("summarizeDiagnosisAgreement: returns an empty array for a directory that d
   assert.deepEqual(summarizeDiagnosisAgreement("t", path.join(os.tmpdir(), "harnesslab-does-not-exist-" + Date.now())), []);
 });
 
-test("formatDiagnosisAgreement: renders 'x/total label' lines, and a friendly message when there's nothing to compare", () => {
+test("formatDiagnosisAgreement: renders 'x/total diagnosis attempts -> label' lines (never implying a coding-agent-run count), and a friendly message when there's nothing to compare", () => {
   assert.equal(formatDiagnosisAgreement([]), "(no prior diagnosis evidence found for this task)");
   const text = formatDiagnosisAgreement([
-    { label: "skills x contextPolicy", count: 2, diagnosisIds: ["a", "b"] },
-    { label: "contextPolicy", count: 1, diagnosisIds: ["c"] },
+    { label: "skills x contextPolicy", diagnosisAttempts: 2, diagnosisIds: ["a", "b"] },
+    { label: "contextPolicy", diagnosisAttempts: 1, diagnosisIds: ["c"] },
   ]);
-  assert.equal(text, "2/3 skills x contextPolicy\n1/3 contextPolicy");
+  assert.equal(text, "2/3 diagnosis attempts -> skills x contextPolicy\n1/3 diagnosis attempts -> contextPolicy");
 });

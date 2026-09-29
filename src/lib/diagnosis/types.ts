@@ -116,12 +116,19 @@ export interface DiagnosisResult {
 export type StabilityClassification = "mostly_pass" | "mostly_fail" | "unstable";
 
 export interface ReplicationPolicy {
-  /** Every configuration gets at least this many runs before it can be classified, budget permitting. */
+  /** Baseline/candidate get at least this many runs before regression is evaluated; a decisive diagnostic contrast needs this many CONSISTENT runs to count as "replicated". */
   minRunsPerConfiguration: number;
   /** A configuration is never run more than this many times, no matter how unstable it looks. */
   maxRunsPerConfiguration: number;
-  /** Hard cap on total real coding-agent executions across the whole diagnosis (baseline + candidate + every diagnostic run/replicate). Never exceeded automatically. */
+  /** Hard cap on total real coding-agent executions across the whole diagnosis (baseline + candidate + every exploratory/confirmation run). Never exceeded automatically. */
   maxTotalRuns: number;
+  /**
+   * Milestone 8: runs held back from exploration, spent only on confirming
+   * a decision-critical contrast once one is identified. Exploration alone
+   * must never be allowed to consume the whole budget and leave nothing for
+   * confirming the leading hypothesis — see diagnose-stable.ts's planner.
+   */
+  reservedConfirmationRuns: number;
 }
 
 export interface StableDiagnosisRequest {
@@ -130,6 +137,18 @@ export interface StableDiagnosisRequest {
   candidate: HarnessManifest;
   replication: ReplicationPolicy;
 }
+
+/**
+ * Milestone 8: how much a configuration's evidence can be trusted, distinct
+ * from *which way* it leans (that's still `stability`). "provisional" means
+ * exactly one run exists — usable to guide exploration, never to decide a
+ * final diagnosis. "replicated" means >= minRunsPerConfiguration runs that
+ * agree (stability is mostly_pass/mostly_fail). "unstable" means >=
+ * minRunsPerConfiguration runs were collected and they genuinely don't
+ * agree (stability is "unstable") — this is different from "provisional":
+ * it's not under-sampled, it's actually inconsistent.
+ */
+export type EvidenceMaturity = "provisional" | "replicated" | "unstable";
 
 /** Empirical, replicated evidence about one harness configuration. Individual run evidence is preserved in `runs`, never discarded. */
 export interface ConfigurationAggregate {
@@ -147,41 +166,64 @@ export interface ConfigurationAggregate {
   meanInputTokens: number;
   meanOutputTokens: number;
   meanLatencyMs: number;
+  /** Direction classification. Still requires >= minRunsPerConfiguration to say mostly_pass/mostly_fail — see stability.ts. */
   stability: StabilityClassification;
+  /** Confidence tier — see `EvidenceMaturity`'s doc comment. */
+  evidenceMaturity: EvidenceMaturity;
+  /** Whether this configuration currently separates at least one pair of the CONFIRMED-remaining hypotheses — i.e. whether replicating it further could actually change the official diagnosis. Recomputed every planner step; see diagnose-stable.ts's `markDecisionCritical`. */
+  isDecisionCritical: boolean;
 }
 
-export type PlannerAction = "new_configuration" | "replicate";
+/** Milestone 8: "explore" tries a never-before-tested configuration; "confirm" adds a run to an already-tested, decision-critical configuration to raise it from "provisional"/"unstable" to "replicated". */
+export type PlannerAction = "explore" | "confirm";
 
 export interface StablePlannerStep {
   step: number;
   action: PlannerAction;
   bits: string;
   configuration: CellPattern;
-  /** How well this configuration (if resolved decisively) was predicted to split the then-remaining hypotheses, or (for a replicate) why resolving its instability still matters. */
+  /** Balanced-split information score against the CONFIRMED-remaining hypotheses (same metric as Milestone 7). */
   informationScore: number;
+  /** How many pairs of the PROVISIONAL-remaining ("currently leading") hypotheses this configuration separates — see diagnose-stable.ts's `decisionCriticality`. Drives "confirm" targeting and explore prioritization once few hypotheses remain plausible. */
+  decisionCriticality: number;
+  /** Milestone 9: sum of 1/remainingSeparatorCount over every CONFIRMED-remaining hypothesis pair this configuration separates — see stability.ts's `computeSeparatorRarity`. 0 for "confirm" actions (rarity is an exploration-selection concept; an already-tested configuration's rarity was already spent when it was first explored). */
+  separatorRarityScore: number;
+  /** How many of the pairs counted in `separatorRarityScore` had at most `RARE_SEPARATOR_THRESHOLD` remaining separating configurations at selection time. */
+  rarePairsSeparated: number;
+  /** Milestone 9's bounded one-step look-ahead: true if EITHER possible outcome (PASS or FAIL) of this run would leave >1 hypothesis remaining with no untested configuration able to separate any pair among them, or no budget left to run one. Always false for "confirm" actions. Informational — it deprioritizes, but never outright forbids, a risky exploratory pick. */
+  lookaheadRisk: boolean;
   whySelected: string;
+  /** Run budget remaining BEFORE this step's run. */
+  remainingRunBudget: number;
+  reservedConfirmationRuns: number;
+  /** CONFIRMED-remaining hypotheses before this step (what the official diagnosis would say right now). */
   hypothesesBefore: DiagnosisHypothesis[];
   /** The one real coding-agent run this step performed. */
   runResult: ExperimentResult;
-  /** This configuration's full aggregate, recomputed to include `runResult`. */
+  /** This configuration's full aggregate, recomputed to include `runResult`. A frozen snapshot — never mutated by a later step. */
   aggregateAfter: ConfigurationAggregate;
-  hypothesesAfter: DiagnosisHypothesis[];
+  /** Hypotheses still alive using ALL evidence including single-run "provisional" observations — the current best guess, narrower than confirmedHypothesesAfter. */
+  provisionalHypothesesAfter: DiagnosisHypothesis[];
+  /** Hypotheses still alive using only REPLICATED (confirmed) evidence — what the official diagnosis is based on. */
+  confirmedHypothesesAfter: DiagnosisHypothesis[];
+  /** Hypotheses newly CONFIRMED-rejected by this step (i.e. present in confirmedHypothesesAfter's rejected set but not before). */
   hypothesesRejected: DiagnosisHypothesis[];
+  /** confirmedHypothesesAfter filtered to non-rejected — kept for continuity with Milestone 7's field name. */
   hypothesesRemaining: DiagnosisHypothesis[];
 }
 
 /**
  * Hackathon-facing evidence quality, not a formal statistical confidence
- * level. "high" means every configuration relevant to the final diagnosis
- * resolved decisively (mostly_pass or mostly_fail); "moderate" means the
- * diagnosis resolved despite some unrelated instability; "low" means the
- * diagnosis itself is inconclusive because of unresolved instability.
+ * level. "high" means every configuration that was ever decision-critical
+ * reached "replicated" maturity; "moderate" means the diagnosis resolved
+ * despite some unrelated (non-decision-critical) instability; "low" means
+ * the diagnosis itself is inconclusive.
  */
 export interface DiagnosisStability {
   totalRuns: number;
   /** Configurations that needed more than `minRunsPerConfiguration` runs (i.e. their first `minRuns` runs disagreed). */
   repeatedConfigurations: number;
-  /** Bit-vectors of every configuration whose final stability is "unstable". */
+  /** Bit-vectors of every configuration whose final evidenceMaturity is "unstable" (genuinely disagreeing runs — not merely "provisional"/under-sampled). */
   unstableConfigurations: string[];
   evidenceQuality: "low" | "moderate" | "high";
   reason: string;
@@ -208,10 +250,12 @@ export interface StableDiagnosisResult {
   configurationsVisited: number;
   configurationsAvoided: number;
   searchSpaceReductionPct: number;
-  /** Every real coding-agent execution, including every replicate. */
+  /** Every real coding-agent execution, including baseline/candidate replication and every diagnostic explore/confirm run. */
   totalCodingRuns: number;
-  /** Of `totalCodingRuns`, how many were replicate runs (i.e. not a configuration's first run). */
-  replicateRunCount: number;
+  /** Of the diagnostic (non-baseline/candidate) `steps`, how many had action "explore" (a never-before-tested configuration). */
+  exploratoryRunCount: number;
+  /** Of the diagnostic `steps`, how many had action "confirm" (replicating an already-tested, decision-critical configuration). */
+  confirmationRunCount: number;
   sharedBaseCheckpoint: string | null;
   environmentPreparationMs: number | null;
 }
