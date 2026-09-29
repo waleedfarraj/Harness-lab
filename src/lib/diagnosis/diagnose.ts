@@ -42,13 +42,15 @@ export class DuplicateConfigurationError extends Error {
   }
 }
 
-function cellPatternFor(dimensions: HarnessDimension[], level: "baseline" | "candidate"): CellPattern {
+/** Shared with diagnose-stable.ts (Milestone 7) — a configuration where every changed dimension is pinned to the same level. */
+export function cellPatternFor(dimensions: HarnessDimension[], level: "baseline" | "candidate"): CellPattern {
   const pattern = {} as CellPattern;
   for (const dim of dimensions) pattern[dim] = level;
   return pattern;
 }
 
-function manifestForConfiguration(
+/** Shared with diagnose-stable.ts (Milestone 7). */
+export function manifestForConfiguration(
   baseline: HarnessManifest,
   candidate: HarnessManifest,
   dimensions: HarnessDimension[],
