@@ -15,6 +15,7 @@
     "experiment:interaction": "node --conditions=react-server --env-file=.env.local --import tsx scripts/experiment-interaction.ts",
     "experiment:skill-context": "node --conditions=react-server --env-file=.env.local --import tsx scripts/experiment-skill-context.ts",
     "diagnose:smoke": "node --conditions=react-server --env-file=.env.local --import tsx scripts/diagnose-smoke.ts",
+    "diagnose:adaptive": "node --conditions=react-server --env-file=.env.local --import tsx scripts/diagnose-adaptive.ts",
     "sandbox:smoke": "node --env-file=.env.local scripts/sandbox-smoke.mjs",
     "sandbox:branch-spike": "node --env-file=.env.local scripts/sandbox-branch-spike.mjs"
   },

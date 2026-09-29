@@ -14,13 +14,15 @@ export interface DiagnosisRequest {
 /**
  * Which level (the baseline or candidate value) each changed dimension is
  * set to in one cell. Only ever indexed by the dimensions that actually
- * changed between baseline and candidate (1 or 2 of them), so this is
+ * changed between baseline and candidate (1-4 of them), so this is
  * intentionally partial over the full `HarnessDimension` set.
  */
 export type CellPattern = Partial<Record<HarnessDimension, "baseline" | "candidate">>;
 
 export interface KnownCell {
   label: string;
+  /** Bit-vector encoding of `configuration` relative to the stable `changedDimensions` order, e.g. "1010". */
+  bits: string;
   configuration: CellPattern;
   success: boolean;
 }
@@ -38,17 +40,26 @@ export interface DiagnosisHypothesis {
 }
 
 export interface DiagnosticExperiment {
-  id: string;
+  step: number;
+  bits: string;
   configuration: CellPattern;
   manifest: HarnessManifest;
+  /** How well this configuration was predicted to split the (then-)remaining hypotheses. Higher = more balanced = more informative. */
+  informationScore: number;
   whySelected: string;
   hypothesesBefore: DiagnosisHypothesis[];
   result: ExperimentResult;
+  /** Full hypothesis set, re-evaluated after this experiment's result. */
   hypothesesAfter: DiagnosisHypothesis[];
+  /** Hypotheses that were "possible" before this step and are "rejected" after it. */
+  hypothesesRejected: DiagnosisHypothesis[];
+  /** Hypotheses still "possible" (or "supported") after this step. */
+  hypothesesRemaining: DiagnosisHypothesis[];
 }
 
 export interface DiagnosisEvidence {
   label: string;
+  bits: string;
   configuration: CellPattern;
   success: boolean;
 }
@@ -65,6 +76,8 @@ export interface DiagnosisResult {
   candidateResult: ExperimentResult;
   regressionDetected: boolean;
   changedDimensions: HarnessDimension[];
+  /** The full candidate hypothesis space (main effects + pairwise interactions) before any diagnostic experiment ran. */
+  hypothesisSpace: DiagnosisHypothesis[];
   experiments: DiagnosticExperiment[];
   diagnosis: Diagnosis;
   evidence: DiagnosisEvidence[];
@@ -74,6 +87,10 @@ export interface DiagnosisResult {
   mechanismExplanation: string | null;
   experimentsRun: number;
   exhaustiveConfigurations: number;
+  /** experimentsRun + 2 (baseline, candidate). */
+  configurationsExecuted: number;
+  configurationsAvoided: number;
+  searchSpaceReductionPct: number;
   sharedBaseCheckpoint: string | null;
   environmentPreparationMs: number | null;
 }

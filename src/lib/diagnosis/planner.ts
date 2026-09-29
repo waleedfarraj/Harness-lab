@@ -1,57 +1,92 @@
 import "server-only";
 
 import type { HarnessDimension } from "../harness/types";
-import { isIsolating, isolationConfiguration } from "./hypotheses";
-import type { CellPattern, Diagnosis, DiagnosisHypothesis, KnownCell } from "./types";
+import { bitsToConfiguration, predict } from "./hypotheses";
+import type { CellPattern, Diagnosis, DiagnosisHypothesis } from "./types";
 
 export interface PlannedExperiment {
+  bits: string;
   configuration: CellPattern;
+  informationScore: number;
+  predictedPass: number;
+  predictedFail: number;
   whySelected: string;
 }
 
-/**
- * Decides the next experiment needed to distinguish the remaining
- * hypotheses, or `null` if no more are needed (either because a hypothesis
- * is already conclusively supported, or the experiment budget is spent).
- * Generic over `dimensions` — never references a dimension name directly.
- */
-export function selectNextExperiment(dimensions: HarnessDimension[], knownCells: KnownCell[], remainingBudget: number): PlannedExperiment | null {
-  if (dimensions.length === 1) return null; // fully resolved from baseline/candidate alone
-  if (remainingBudget <= 0) return null;
-
-  const [dimA, dimB] = dimensions;
-  const cellA = knownCells.find((c) => isIsolating(c.configuration, dimA, dimensions));
-  const cellB = knownCells.find((c) => isIsolating(c.configuration, dimB, dimensions));
-
-  if (!cellA) {
-    return {
-      configuration: isolationConfiguration(dimA, dimensions, "candidate"),
-      whySelected: `Distinguishes whether ${dimA} alone reproduces the regression (main effect) from the ${dimB}/interaction hypotheses.`,
-    };
+/** How many hypotheses in `remaining` predict PASS vs FAIL for `configuration`. */
+export function scoreConfiguration(configuration: CellPattern, remaining: DiagnosisHypothesis[]): { predictedPass: number; predictedFail: number; informationScore: number } {
+  let predictedPass = 0;
+  let predictedFail = 0;
+  for (const h of remaining) {
+    if (predict(h, configuration)) predictedPass += 1;
+    else predictedFail += 1;
   }
-  if (!cellA.success) {
-    // dimA alone already reproduces the failure -- a sufficient explanation is already found (parsimony);
-    // stop here rather than spending a second experiment to also characterize dimB.
-    return null;
-  }
-  if (!cellB) {
-    return {
-      configuration: isolationConfiguration(dimB, dimensions, "candidate"),
-      whySelected: `${dimA} alone was safe. Distinguishes whether ${dimB} alone reproduces the regression (main effect) from the interaction hypothesis.`,
-    };
-  }
-  return null; // both isolating cells known; hypotheses are fully resolved
+  return { predictedPass, predictedFail, informationScore: Math.min(predictedPass, predictedFail) };
 }
 
-/** Final classification from a set of hypotheses. Exactly one "supported" hypothesis resolves cleanly; zero or more than one is inconclusive. */
+/**
+ * Adaptive experiment selection: among every untested, non-baseline,
+ * non-candidate configuration, picks the one whose predicted PASS/FAIL
+ * split across the still-`possible` hypotheses is closest to balanced
+ * (highest `informationScore` = min(predictedPass, predictedFail)) — a
+ * deterministic approximation of maximum information gain, with no LLM
+ * involved. Ties break on the lexicographically smallest bit string, so
+ * the same inputs always choose the same experiment.
+ *
+ * Returns null once at most one hypothesis remains (nothing left to
+ * distinguish), the budget is spent, or every configuration has been
+ * tested.
+ */
+export function selectNextExperiment(
+  dimensions: HarnessDimension[],
+  remainingHypotheses: DiagnosisHypothesis[],
+  testedBits: Set<string>,
+  remainingBudget: number,
+): PlannedExperiment | null {
+  if (remainingHypotheses.length <= 1) return null;
+  if (remainingBudget <= 0) return null;
+
+  const total = 2 ** dimensions.length;
+  const allZeros = "0".repeat(dimensions.length);
+  const allOnes = "1".repeat(dimensions.length);
+
+  let best: PlannedExperiment | null = null;
+  for (let n = 0; n < total; n++) {
+    const bits = n.toString(2).padStart(dimensions.length, "0");
+    if (bits === allZeros || bits === allOnes) continue; // baseline/candidate: already known
+    if (testedBits.has(bits)) continue;
+
+    const configuration = bitsToConfiguration(bits, dimensions);
+    const { predictedPass, predictedFail, informationScore } = scoreConfiguration(configuration, remainingHypotheses);
+    if (!best || informationScore > best.informationScore || (informationScore === best.informationScore && bits < best.bits)) {
+      best = {
+        bits,
+        configuration,
+        informationScore,
+        predictedPass,
+        predictedFail,
+        whySelected: `Best separates ${remainingHypotheses.length} remaining hypotheses (predicted split: ${predictedPass} PASS / ${predictedFail} FAIL).`,
+      };
+    }
+  }
+  return best;
+}
+
+/** Final classification from a fully-evaluated hypothesis set. Exactly one non-rejected hypothesis resolves cleanly; zero or more than one is inconclusive. */
 export function classifyDiagnosis(hypotheses: DiagnosisHypothesis[]): Diagnosis {
-  const supported = hypotheses.filter((h) => h.status === "supported");
-  if (supported.length === 1) {
-    const h = supported[0];
+  const remaining = hypotheses.filter((h) => h.status !== "rejected");
+  if (remaining.length === 1) {
+    const h = remaining[0];
     return h.type === "main_effect" ? { type: "main_effect", factors: h.factors } : { type: "interaction", factors: h.factors };
   }
-  if (supported.length > 1) {
-    return { type: "inconclusive", reason: `multiple hypotheses are independently supported: ${supported.map((h) => h.id).join(", ")}` };
+  if (remaining.length === 0) {
+    return {
+      type: "inconclusive",
+      reason: "no main-effect or pairwise-interaction hypothesis is consistent with the observed results; a higher-order interaction may be responsible, which this model does not represent",
+    };
   }
-  return { type: "inconclusive", reason: "not enough evidence yet to support any single hypothesis" };
+  return {
+    type: "inconclusive",
+    reason: `${remaining.length} hypotheses remain consistent with the evidence collected so far: ${remaining.map((h) => h.id).join(", ")}`,
+  };
 }

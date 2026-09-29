@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { runDiagnosis } from "../src/lib/diagnosis/diagnose";
+import { DuplicateConfigurationError, runDiagnosis } from "../src/lib/diagnosis/diagnose";
 import { baselineV1 } from "../src/lib/harness/manifests/baseline-v1";
 import { baselineSkill } from "../src/lib/harness/skills/baseline-skill";
 import { verificationSkillV2 } from "../src/lib/harness/skills/verification-skill-v2";
@@ -112,7 +112,10 @@ test("main effect: resolves after exactly one diagnostic experiment when it alre
 
   assert.equal(result.regressionDetected, true);
   assert.equal(result.experimentsRun, 1);
-  assert.deepEqual(result.diagnosis, { type: "main_effect", factors: ["skills"] });
+  // The adaptive planner's deterministic tie-break picks the lexicographically smallest bit
+  // string among equally-informative candidates; for changedDimensions=[skills, contextPolicy]
+  // that's bits="01" (contextPolicy isolated alone), not "10" (skills isolated alone).
+  assert.deepEqual(result.diagnosis, { type: "main_effect", factors: ["contextPolicy"] });
   assert.equal(fake.forkCalls.length, 3, "baseline + candidate + 1 diagnostic fork");
   assert.equal(fake.createCalls.count, 1, "the shared base is prepared exactly once");
 });
@@ -197,6 +200,96 @@ test("skipExplanation:true never calls explainFn and leaves mechanismExplanation
 
   assert.equal(called, false);
   assert.equal(result.mechanismExplanation, null);
+});
+
+test("duplicate-configuration guard fails loudly if the planner ever re-requests an already-known configuration (simulated planner bug)", async () => {
+  const fake = fakeRunner();
+  let calls = 0;
+  await assert.rejects(
+    runDiagnosis(
+      { task, baseline, candidate, maxExperiments: 5 },
+      {
+        runner: fake.runner,
+        skipExplanation: true,
+        runExperimentFn: async (_t, manifest) => fakeResult(manifest.id === "diag-baseline", manifest.id),
+        // A broken selector that always re-proposes the candidate's own configuration ("11") —
+        // something the real selectNextExperiment can never do, since it always excludes testedBits.
+        selectNextExperimentFn: () => {
+          calls += 1;
+          return { bits: "11", configuration: { skills: "candidate", contextPolicy: "candidate" }, informationScore: 1, predictedPass: 1, predictedFail: 1, whySelected: "broken test stub" };
+        },
+      },
+    ),
+    DuplicateConfigurationError,
+  );
+  assert.equal(calls, 1);
+});
+
+test("budget exhaustion: maxExperiments too small to uniquely resolve -> inconclusive, remaining hypotheses reported honestly", async (t) => {
+  const fake = fakeRunner();
+  const result = await runDiagnosis(
+    { task, baseline, candidate, maxExperiments: 1 },
+    {
+      runner: fake.runner,
+      skipExplanation: true,
+      // Both isolating cells would need to pass to diagnose an interaction, but the budget only allows one.
+      runExperimentFn: async (_t, manifest) => fakeResult(manifest.id === "diag-baseline" || manifest.id === "diagnostic-1", manifest.id),
+    },
+  );
+  t.after(() => fs.rmSync(diagnosisEvidencePath(result.diagnosisId), { force: true }));
+
+  assert.equal(result.experimentsRun, 1);
+  assert.equal(result.diagnosis.type, "inconclusive");
+  assert.match((result.diagnosis as { reason: string }).reason, /hypotheses remain/);
+  assert.equal(fake.forkCalls.length, 3, "budget stopped after baseline + candidate + 1 diagnostic fork");
+});
+
+test("4-dimension adaptive diagnosis: resolves skills x contextPolicy interaction with two benign distractor dimensions, in fewer than 16 configurations", async (t) => {
+  const baseline4: HarnessManifest = { ...baselineV1, id: "diag4-baseline", name: "diag4-baseline", skills: [baselineSkill], contextPolicy: "full" };
+  const candidate4: HarnessManifest = {
+    ...baselineV1,
+    id: "diag4-candidate",
+    name: "diag4-candidate",
+    skills: [verificationSkillV2],
+    contextPolicy: "compact",
+    systemPrompt: "Be concise. Read only what you need, make the smallest correct change, run tests, stop.",
+    execution: { maxTurns: 9 },
+  };
+
+  const fake = fakeRunner();
+  const result = await runDiagnosis(
+    { task, baseline: baseline4, candidate: candidate4, maxExperiments: 6 },
+    {
+      runner: fake.runner,
+      skipExplanation: true,
+      // Ground truth: only skills=candidate AND contextPolicy=candidate together fail. systemPrompt and
+      // execution.maxTurns are genuine no-ops regardless of their own or skills/contextPolicy's value.
+      runExperimentFn: async (_t, manifest) => {
+        const skillIds = manifest.skills.map((s) => s.id);
+        const skillsCandidate = skillIds.includes(verificationSkillV2.id);
+        const contextCandidate = manifest.contextPolicy === "compact";
+        return fakeResult(!(skillsCandidate && contextCandidate), manifest.id);
+      },
+    },
+  );
+  t.after(() => fs.rmSync(diagnosisEvidencePath(result.diagnosisId), { force: true }));
+
+  assert.deepEqual([...result.changedDimensions].sort(), ["contextPolicy", "execution.maxTurns", "skills", "systemPrompt"]);
+  assert.equal(result.hypothesisSpace.length, 10, "4 main effects + 6 pairwise interactions");
+  assert.equal(result.diagnosis.type, "interaction");
+  assert.equal((result.diagnosis as { type: "interaction"; factors: string[] }).factors.slice().sort().join("+"), "contextPolicy+skills");
+  assert.equal(result.exhaustiveConfigurations, 16);
+  assert.ok(result.configurationsExecuted < 16, `expected materially fewer than 16 configurations, got ${result.configurationsExecuted}`);
+  assert.equal(result.configurationsExecuted, result.experimentsRun + 2);
+  assert.equal(result.configurationsAvoided, 16 - result.configurationsExecuted);
+  assert.equal(Math.round(result.searchSpaceReductionPct), Math.round((result.configurationsAvoided / 16) * 100));
+
+  // No duplicate configuration was ever executed.
+  const executedBits = [result.evidence[0].bits, result.evidence[1].bits, ...result.experiments.map((e) => e.bits)];
+  assert.equal(new Set(executedBits).size, executedBits.length, "every executed configuration is unique");
+
+  // Only one shared checkpoint was prepared, no matter how many diagnostic forks ran.
+  assert.equal(fake.createCalls.count, 1);
 });
 
 test("changedDimensions is derived automatically and never hard-codes a caller-supplied cause", async (t) => {
