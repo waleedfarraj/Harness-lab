@@ -1,0 +1,9 @@
+# Never upload local secrets, raw run evidence, or tooling to Vercel.
+.env
+.env.*
+!.env.example
+.harnesslab
+.venv-sandbox
+.next
+node_modules
+.git

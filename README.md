@@ -6,6 +6,8 @@ When a coding agent regresses after several harness changes at once (system prom
 
 Built for the Nebius x NVIDIA Global AI Hackathon 2026, Coding & Agentic Engineering track. MIT licensed.
 
+**Live demo (read-only replay of saved evidence): https://harnesslab-sooty.vercel.app**. The hosted site makes no API calls and has no live agent execution; to run experiments, use the commands below.
+
 ## What it does
 
 1. **Runs a coding agent** on a small task fixture (edit code, run tests and build) under an explicit, versioned *harness manifest*.
@@ -40,6 +42,10 @@ npm run demo:replay -- --summary-only   # summary only
 ```
 
 This replays `demo-evidence/applypilot-regression/`, a byte-for-byte copy of a real recorded run (`provenance.json` holds its sha256 and the run ids). It makes no network calls and needs no credentials. `npm run dev` also serves the same page at `/`.
+
+### Deploying the replay
+
+The replay needs no environment variables. On Vercel, `vercel.json` is not required; `next.config.ts` bundles `demo-evidence/` with the page, and the credit-spending dev routes are always disabled when `VERCEL` is set. Deploy with `npx vercel@latest deploy --prod --yes`; `.vercelignore` keeps `.env*` and `.harnesslab/` out of the upload.
 
 ## Run the live experiment
 

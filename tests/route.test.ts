@@ -51,3 +51,8 @@ test("the route is a 404 unless dev routes are explicitly enabled (public deploy
     else process.env.HARNESSLAB_ENABLE_DEV_ROUTES = saved;
   }
 });
+
+test("dev routes stay off on Vercel even if the flag is set", () => {
+  assert.equal(devRoutesEnabled({ HARNESSLAB_ENABLE_DEV_ROUTES: "1" }), true);
+  assert.equal(devRoutesEnabled({ HARNESSLAB_ENABLE_DEV_ROUTES: "1", VERCEL: "1" }), false);
+});
