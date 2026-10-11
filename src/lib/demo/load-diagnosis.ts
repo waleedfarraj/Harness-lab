@@ -5,7 +5,9 @@ import path from "node:path";
 import { toDiagnosisViewModel } from "../view-model/diagnosis-view-model";
 import type { DiagnosisViewModel } from "../view-model/types";
 import type { DiagnosisResult, StableDiagnosisResult } from "../diagnosis/types";
-import { DEFAULT_DEMO_EVIDENCE_KEY, DEMO_EVIDENCE, findDemoEvidence, type DemoEvidenceEntry } from "./evidence-catalog";
+import { DEFAULT_DEMO_EVIDENCE_KEY, DEMO_EVIDENCE, findDemoEvidence, type DemoEvidenceEntry, type DemoFraming } from "./evidence-catalog";
+import { DEMO_EVIDENCE_DIR, locateEvidenceFile } from "./locate-evidence";
+import { computeTraceFindings, type TraceFindings } from "./trace-findings";
 
 export interface LoadedDiagnosisDemo {
   vm: DiagnosisViewModel;
@@ -13,6 +15,32 @@ export interface LoadedDiagnosisDemo {
   activeKey: string;
   catalog: DemoEvidenceEntry[];
   sourceFilePath: string;
+  /** Deterministic facts computed from the recorded trajectories (null when the evidence has none). */
+  findings: TraceFindings | null;
+  framing: DemoFraming | null;
+  claimAudit: ClaimAudit | null;
+  /** True when the page is rendered from saved evidence only (always the case here; the page never calls Nebius). */
+  replay: true;
+}
+
+/** Reviewer analysis of the model-written explanation against recorded evidence. Shown only when it was written for exactly this diagnosis. */
+export interface ClaimAudit {
+  diagnosisId: string;
+  basis: string;
+  claims: { claim: string; verdict: "observed" | "observed_with_caveat" | "inferred"; evidence: string }[];
+  limitations: string[];
+}
+
+function loadClaimAudit(entry: DemoEvidenceEntry | undefined, diagnosisId: string): ClaimAudit | null {
+  if (!entry?.auditDir) return null;
+  const file = path.join(DEMO_EVIDENCE_DIR, entry.auditDir, "claim-audit.json");
+  if (!fs.existsSync(file)) return null;
+  try {
+    const audit = JSON.parse(fs.readFileSync(file, "utf8")) as ClaimAudit;
+    return audit.diagnosisId === diagnosisId ? audit : null;
+  } catch {
+    return null;
+  }
 }
 
 export class DiagnosisEvidenceNotFoundError extends Error {
@@ -52,7 +80,7 @@ export function loadDiagnosisForDemo(evidenceKeyParam?: string): LoadedDiagnosis
   let ctx: ReturnType<typeof contextFor> | Record<string, never>;
 
   if (entry) {
-    sourceFilePath = entry.filePath;
+    sourceFilePath = (entry.locate && locateEvidenceFile(entry.locate)) || entry.filePath;
     activeKey = entry.key;
     ctx = contextFor(entry);
   } else if (envValue) {
@@ -71,6 +99,17 @@ export function loadDiagnosisForDemo(evidenceKeyParam?: string): LoadedDiagnosis
 
   const raw = JSON.parse(fs.readFileSync(sourceFilePath, "utf8")) as StableDiagnosisResult | DiagnosisResult;
   const vm = toDiagnosisViewModel(raw, ctx);
+  const activeEntry = activeKey === "custom" ? undefined : findDemoEvidence(activeKey);
+  const findings = "aggregates" in raw ? computeTraceFindings(raw as StableDiagnosisResult) : null;
 
-  return { vm, activeKey, catalog: DEMO_EVIDENCE, sourceFilePath };
+  return {
+    vm,
+    activeKey,
+    catalog: DEMO_EVIDENCE,
+    sourceFilePath,
+    findings,
+    framing: activeEntry?.framing ?? null,
+    claimAudit: loadClaimAudit(activeEntry, vm.diagnosisId),
+    replay: true,
+  };
 }

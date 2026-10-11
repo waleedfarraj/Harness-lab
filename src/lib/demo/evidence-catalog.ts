@@ -1,11 +1,14 @@
 import "server-only";
 
 import path from "node:path";
+import { applypilotBaseline, applypilotCandidate } from "../harness/manifests/applypilot-v1";
+import { applypilotRankTask } from "../experiments/tasks/applypilot-rank";
 import { baselineV1 } from "../harness/manifests/baseline-v1";
 import { baselineSkill } from "../harness/skills/baseline-skill";
 import { verificationSkillV2 } from "../harness/skills/verification-skill-v2";
 import type { HarnessManifest } from "../harness/types";
 import { DIAGNOSES_DIR } from "../experiments/evidence";
+import { DEMO_EVIDENCE_DIR, type EvidenceLocator } from "./locate-evidence";
 import { BENCHMARK_CASES } from "../benchmark/cases";
 
 /**
@@ -40,11 +43,25 @@ function fourDimCandidate(id: string, maxTurns: number): HarnessManifest {
   return { ...baselineV1, id, skills: [verificationSkillV2], contextPolicy: "compact", systemPrompt: TONE_VARIANT_SYSTEM_PROMPT, execution: { maxTurns } };
 }
 
+/** Scope disclosure shown above the diagnosis for entries that are derived from another project. */
+export interface DemoFraming {
+  badge: string;
+  title: string;
+  is: string[];
+  isNot: string[];
+}
+
 export interface DemoEvidenceEntry {
   key: string;
   label: string;
   description: string;
+  /** Fallback / legacy pointer. When `locate` is set the file is found by content instead and this path is only used if nothing matches. */
   filePath: string;
+  /** Find the evidence by task + manifest ids, so renaming or re-running never breaks the demo (see locate-evidence.ts). */
+  locate?: EvidenceLocator;
+  /** Directory (under demo-evidence/) holding this entry's claim-audit.json, if any. */
+  auditDir?: string;
+  framing?: DemoFraming;
   taskTitle: string;
   taskInstruction: string;
   baselineManifest: HarnessManifest;
@@ -121,6 +138,33 @@ export const DEMO_EVIDENCE: DemoEvidenceEntry[] = [
     taskInstruction: BENCHMARK_CASES.find((c) => c.id === "interaction-discount-apply")!.task.instruction,
     baselineManifest: BENCHMARK_CASES.find((c) => c.id === "interaction-discount-apply")!.baseline,
     candidateManifest: BENCHMARK_CASES.find((c) => c.id === "interaction-discount-apply")!.candidate,
+  },
+  {
+    key: "applypilot",
+    label: "ApplyPilot regression",
+    description: "ApplyPilot-derived coding-agent evaluation: swapping the job-evaluation skill for a generic one and compacting context made the agent fail its job-ranking task. Replayed from saved evidence.",
+    // scripts/diagnose-applypilot.ts, manifestId "applypilot-baseline"/"applypilot-candidate". Found by content, not filename.
+    filePath: path.join(DEMO_EVIDENCE_DIR, "applypilot-regression", "diagnosis.json"),
+    locate: { taskId: applypilotRankTask.id, baselineManifestId: applypilotBaseline.id, candidateManifestId: applypilotCandidate.id },
+    auditDir: "applypilot-regression",
+    framing: {
+      badge: "ApplyPilot-derived evaluation",
+      title: "A coding agent working on an ApplyPilot-style ranking task",
+      is: [
+        "A real HarnessLab experiment: Nemotron coding-agent runs in isolated sandboxes against a fixture derived from ApplyPilot-AI's job-ranking rules.",
+        "The agent under test is the coding agent that would work on ApplyPilot; the harness under test is how it is guided (skill, context policy).",
+        "Saved evidence replayed from disk: this page makes no API calls.",
+      ],
+      isNot: [
+        "Not a live integration: no ApplyPilot code, database, network or user data is touched, and ApplyPilot is not modified.",
+        "Not ApplyPilot's production job-ranking feature or its AI features being tested.",
+        "Not a general benchmark: one task, 2 runs per configuration.",
+      ],
+    },
+    taskTitle: applypilotRankTask.title,
+    taskInstruction: applypilotRankTask.instruction,
+    baselineManifest: applypilotBaseline,
+    candidateManifest: applypilotCandidate,
   },
 ];
 

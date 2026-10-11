@@ -17,9 +17,12 @@
     "diagnose:smoke": "node --conditions=react-server --env-file=.env.local --import tsx scripts/diagnose-smoke.ts",
     "diagnose:adaptive": "node --conditions=react-server --env-file=.env.local --import tsx scripts/diagnose-adaptive.ts",
     "diagnose:stable": "node --conditions=react-server --env-file=.env.local --import tsx scripts/diagnose-stable.ts",
+    "diagnose:applypilot": "node --conditions=react-server --env-file=.env.local --import tsx scripts/diagnose-applypilot.ts",
     "diagnose:stable-simulate": "node --conditions=react-server --import tsx scripts/diagnose-stable-simulate.ts",
     "sandbox:smoke": "node --env-file=.env.local scripts/sandbox-smoke.mjs",
-    "sandbox:branch-spike": "node --env-file=.env.local scripts/sandbox-branch-spike.mjs"
+    "sandbox:branch-spike": "node --env-file=.env.local scripts/sandbox-branch-spike.mjs",
+    "demo:freeze": "node --conditions=react-server --import tsx scripts/demo-freeze.ts",
+    "demo:replay": "node --conditions=react-server --import tsx scripts/demo-replay.ts"
   },
   "dependencies": {
     "next": "16.3.6",

@@ -1,0 +1,29 @@
+{
+  "note": "Byte-for-byte copy of a recorded HarnessLab diagnosis. Not edited. Original is kept in .harnesslab/diagnoses/ (git-ignored).",
+  "diagnosisId": "de62e1b3-d624-4e01-a4fe-691685339cad",
+  "sourceFile": ".harnesslab/diagnoses/de62e1b3-d624-4e01-a4fe-691685339cad.json",
+  "sha256": "62d8f3cc46ef3eefa82aeffad15684ee8087614074f566ee4d7ab2d30bd1e141",
+  "bytes": 264991,
+  "frozenAt": "2026-10-11T17:04:05.448Z",
+  "taskId": "applypilot-rank-001",
+  "changedDimensions": [
+    "skills",
+    "contextPolicy"
+  ],
+  "diagnosis": {
+    "type": "main_effect",
+    "factors": [
+      "contextPolicy"
+    ]
+  },
+  "evidenceQuality": "high",
+  "totalCodingRuns": 6,
+  "runIds": [
+    "4b5d1687-2f65-4791-bd63-1e9332c31ebf",
+    "2888cf5a-36b4-4f52-a00d-e4deee35ca08",
+    "1051883a-cf73-48c5-ae97-59c5dc5fd4d4",
+    "46ff1b64-5387-41ea-917d-8653e540448b",
+    "325f5a33-9bf9-427d-af3f-4d78eae07d5f",
+    "b1fe752b-b3a0-4ba5-b921-52c112cfbe6a"
+  ]
+}

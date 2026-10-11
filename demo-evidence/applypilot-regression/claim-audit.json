@@ -1,0 +1,43 @@
+{
+  "diagnosisId": "de62e1b3-d624-4e01-a4fe-691685339cad",
+  "basis": "Statement-by-statement check of Nemotron's mechanism explanation against the recorded trajectories (per-turn tool calls, per-request compaction metadata, termination reasons) and against HarnessLab's own source (src/lib/agent/coding-agent.ts applyContextPolicy; src/lib/agent/tools.ts read_file). Written by a reviewer, not by Nemotron. Counts below are recomputed from the evidence by tests/demo-replay.test.ts.",
+  "claims": [
+    {
+      "claim": "Context compaction replaced earlier tool results with bounded summaries.",
+      "verdict": "observed",
+      "evidence": "All 4 candidate-side runs (2 candidate, 2 isolating) log compaction events and no baseline run does. Example: run 1051883a, turn 4: src/rankingContract.ts 2021 chars -> 75-char placeholder. applyContextPolicy overwrites messages[i] before the request is sent, so the model's next request contained the placeholder."
+    },
+    {
+      "claim": "After the first read of a file, later reads return only an 'unchanged' marker.",
+      "verdict": "observed_with_caveat",
+      "evidence": "All 4 failing runs received 4 marker responses each; the baseline runs received 0. Caveat: Nemotron attributes the marker to the context policy, but it is produced by the read_file tool (tools.ts) under BOTH policies; it never fired in the baseline because the baseline agent never re-read a file. It is a fixed mechanism, not the changed dimension. It turns compaction into a trap because it claims the content is 'identical to what you already have' while the copy in context is a placeholder."
+    },
+    {
+      "claim": "The agent could no longer see the actual contract/source text.",
+      "verdict": "observed_with_caveat",
+      "evidence": "4 of 4 failing runs: src/rankingContract.ts was compacted and every later read of it returned the marker, never the full text again. Caveat: full request bodies are not stored, so what the model saw is derived from the recorded compaction metadata plus the code that applies it, not from a saved prompt."
+    },
+    {
+      "claim": "The agent looped on redundant reads and exhausted its turn budget.",
+      "verdict": "observed",
+      "evidence": "All 4 failing runs ended with terminationReason max_turns at 8 turns; each made 4 marker-returning re-reads. Baseline runs completed in 8 turns after writing, testing and building."
+    },
+    {
+      "claim": "This prevented any meaningful progress.",
+      "verdict": "observed_with_caveat",
+      "evidence": "None of the 4 failing runs ran npm test or npm run build (baseline: 2 of 2 did, at turns 6 and 7). 3 of 4 never wrote a file. Caveat: candidate run 1051883a did write src/rankJobs.ts (739 chars vs about 2,000 in the passing runs) on turn 4, the same turn the contract was compacted, and never verified it; hidden tests failed."
+    },
+    {
+      "claim": "The failure is caused by contextPolicy, not by the skill swap.",
+      "verdict": "inferred",
+      "evidence": "Observed: with the ORIGINAL ApplyPilot skill and only contextPolicy changed (isolating configuration 01), 2 of 2 runs failed with the same compaction-then-marker pattern; baseline 2 of 2 passed. Inferred: that the candidate skill alone is harmless. The opposite single-change configuration (candidate skill + full context) was not run; the diagnosis rules out 'skills' and 'skills x contextPolicy' by elimination under the assumption that the baseline-skill + compact-context result transfers."
+    }
+  ],
+  "limitations": [
+    "2 runs per configuration. Frequencies, not probabilities.",
+    "The configuration that changes only the skill (candidate skill + full context) was not run, so 'the skill swap alone is harmless' is inferred by elimination, not observed.",
+    "Full model request bodies are not stored; 'the model saw the placeholder' is derived from recorded per-request compaction metadata and the code that applies it.",
+    "The 'unchanged' marker is a fixed tool behavior present in both harnesses; the regression needs compaction to make it harmful.",
+    "An earlier attempt of the same experiment (diagnosis cd45ff83) had an unstable baseline (1 of 3 runs passed) and correctly reported no attributable regression; it is kept on disk and not used here."
+  ]
+}
