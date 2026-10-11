@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import { Section, Card, Badge, Mono, Stat } from "@/components/diagnosis/primitives";
 import type { AggregateBenchmarkReport } from "@/lib/benchmark/report";
 
@@ -18,17 +19,8 @@ function badgeClass(diagnosisType: string): string {
 }
 
 export default function BenchmarksPage() {
-  if (!fs.existsSync(REPORT_PATH)) {
-    return (
-      <main className="mx-auto max-w-6xl px-6 py-10">
-        <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">No benchmark report yet</h1>
-        <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-          Run <Mono className="rounded bg-zinc-100 px-1 dark:bg-zinc-800">scripts/benchmark-run.ts</Mono> for each case, then{" "}
-          <Mono className="rounded bg-zinc-100 px-1 dark:bg-zinc-800">scripts/benchmark-report.ts</Mono>.
-        </p>
-      </main>
-    );
-  }
+  // The report lives in git-ignored .harnesslab/; on a fresh clone or the hosted replay there is nothing to show.
+  if (!fs.existsSync(REPORT_PATH)) notFound();
 
   const report = JSON.parse(fs.readFileSync(REPORT_PATH, "utf8")) as AggregateBenchmarkReport;
 

@@ -1,4 +1,5 @@
 import { NebiusError, runNemotron, type NebiusErrorCode } from "@/lib/nebius/client";
+import { devRoutesEnabled } from "@/lib/dev-routes";
 import type { NemotronTestFailure, NemotronTestSuccess } from "@/types/nemotron";
 
 export const runtime = "nodejs";
@@ -16,6 +17,8 @@ const STATUS_BY_CODE: Record<NebiusErrorCode, number> = {
 };
 
 export async function POST(request: Request): Promise<Response> {
+  if (!devRoutesEnabled()) return new Response(null, { status: 404 });
+
   const body: unknown = await request.json().catch(() => undefined);
   const prompt =
     typeof body === "object" && body !== null ? (body as { prompt?: unknown }).prompt : undefined;

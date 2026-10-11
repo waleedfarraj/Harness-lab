@@ -54,7 +54,7 @@ export function ResultAtAGlance({ vm }: { vm: DiagnosisViewModel }) {
       <Tile label="Candidate" value={outcomeCount(c, vm.candidate.result)} sub="same task, same evaluator" tone={vm.candidate.result === "PASS" ? "pass" : "fail"} />
       <Tile label="Harness dimensions changed" value={String(vm.dimensionChanges.length)} sub={vm.dimensionChanges.map((d) => d.label).join(" + ")} />
       <Tile label="Root-cause attribution" value={attribution} sub={kind} />
-      <Tile label="Evidence quality" value={(vm.stability?.evidenceQuality ?? "n/a").toUpperCase()} sub={`${vm.sandbox.totalCodingRuns} sandboxed coding-agent runs`} />
+      <Tile label="Evidence quality" value={(vm.stability?.evidenceQuality ?? "n/a").toUpperCase()} sub={`${vm.sandbox.totalCodingRuns} recorded coding-agent runs`} />
     </div>
   );
 }

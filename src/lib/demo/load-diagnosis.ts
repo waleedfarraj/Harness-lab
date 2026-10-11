@@ -43,6 +43,15 @@ function loadClaimAudit(entry: DemoEvidenceEntry | undefined, diagnosisId: strin
   }
 }
 
+function resolveEntryPath(entry: DemoEvidenceEntry): string {
+  return (entry.locate && locateEvidenceFile(entry.locate)) || entry.filePath;
+}
+
+/** An entry is usable only if its evidence file exists here (git-ignored `.harnesslab/` evidence is absent on a fresh clone or a hosted replay). */
+export function isEvidenceAvailable(entry: DemoEvidenceEntry): boolean {
+  return fs.existsSync(resolveEntryPath(entry));
+}
+
 export class DiagnosisEvidenceNotFoundError extends Error {
   constructor(filePath: string) {
     super(`No diagnosis evidence file at ${filePath}. Run one of the diagnose:* scripts first, or point HARNESSLAB_DEMO_DIAGNOSIS at an existing .harnesslab/diagnoses/*.json file.`);
@@ -73,24 +82,29 @@ export function loadDiagnosisForDemo(evidenceKeyParam?: string): LoadedDiagnosis
 
   // Priority: ?evidence= query key > HARNESSLAB_DEMO_DIAGNOSIS as a catalog key > default catalog entry.
   // (HARNESSLAB_DEMO_DIAGNOSIS as a literal file path is handled below, once we know neither matched a catalog key.)
-  const entry = (evidenceKeyParam && findDemoEvidence(evidenceKeyParam)) || (envValue && findDemoEvidence(envValue)) || undefined;
+  // A key whose evidence is missing on this machine is ignored (falls through to the default) instead of crashing the page.
+  const usable = (key: string | undefined) => {
+    const found = key ? findDemoEvidence(key) : undefined;
+    return found && isEvidenceAvailable(found) ? found : undefined;
+  };
+  const entry = usable(evidenceKeyParam) || usable(envValue) || undefined;
 
   let sourceFilePath: string;
   let activeKey: string;
   let ctx: ReturnType<typeof contextFor> | Record<string, never>;
 
   if (entry) {
-    sourceFilePath = (entry.locate && locateEvidenceFile(entry.locate)) || entry.filePath;
+    sourceFilePath = resolveEntryPath(entry);
     activeKey = entry.key;
     ctx = contextFor(entry);
-  } else if (envValue) {
+  } else if (envValue && !findDemoEvidence(envValue)) {
     // HARNESSLAB_DEMO_DIAGNOSIS set to a literal file path, not a catalog key.
     sourceFilePath = resolveEnvPath(envValue);
     activeKey = "custom";
     ctx = {};
   } else {
     const fallback = findDemoEvidence(DEFAULT_DEMO_EVIDENCE_KEY)!;
-    sourceFilePath = fallback.filePath;
+    sourceFilePath = resolveEntryPath(fallback);
     activeKey = fallback.key;
     ctx = contextFor(fallback);
   }
@@ -105,7 +119,7 @@ export function loadDiagnosisForDemo(evidenceKeyParam?: string): LoadedDiagnosis
   return {
     vm,
     activeKey,
-    catalog: DEMO_EVIDENCE,
+    catalog: DEMO_EVIDENCE.filter(isEvidenceAvailable),
     sourceFilePath,
     findings,
     framing: activeEntry?.framing ?? null,

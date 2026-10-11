@@ -69,8 +69,13 @@ export interface DemoEvidenceEntry {
 }
 
 /**
- * `inconclusive` is the default (see `DEFAULT_DEMO_EVIDENCE_KEY`): it remains
- * the default after the benchmark run (src/lib/benchmark/cases.ts,
+ * `applypilot` is the default (see `DEFAULT_DEMO_EVIDENCE_KEY`) because its evidence is the only
+ * entry tracked in git (demo-evidence/), so it renders on a fresh clone and on the hosted replay.
+ * The other entries point into the git-ignored `.harnesslab/` and are listed only where that
+ * evidence exists on disk (see `isEvidenceAvailable` in load-diagnosis.ts).
+ *
+ * History: `inconclusive` used to be the default; it remains
+ * the benchmark-era choice after the benchmark run (src/lib/benchmark/cases.ts,
  * .harnesslab/benchmark/report.md) because neither hero candidate
  * (interaction-discount-apply, main-effect-payment-retry) reached a decisive
  * current-schema diagnosis — promoting a case to default requires a decisive
@@ -151,7 +156,7 @@ export const DEMO_EVIDENCE: DemoEvidenceEntry[] = [
       badge: "ApplyPilot-derived evaluation",
       title: "A coding agent working on an ApplyPilot-style ranking task",
       is: [
-        "A real HarnessLab experiment: Nemotron coding-agent runs in isolated sandboxes against a fixture derived from ApplyPilot-AI's job-ranking rules.",
+        "A real HarnessLab experiment: Nemotron coding-agent runs (model calls via Nebius Token Factory; code executed in isolated local temp workspaces, not Token Factory Sandboxes) against a fixture derived from ApplyPilot-AI's job-ranking rules.",
         "The agent under test is the coding agent that would work on ApplyPilot; the harness under test is how it is guided (skill, context policy).",
         "Saved evidence replayed from disk: this page makes no API calls.",
       ],
@@ -168,7 +173,7 @@ export const DEMO_EVIDENCE: DemoEvidenceEntry[] = [
   },
 ];
 
-export const DEFAULT_DEMO_EVIDENCE_KEY = "inconclusive";
+export const DEFAULT_DEMO_EVIDENCE_KEY = "applypilot";
 
 export function findDemoEvidence(key: string | undefined): DemoEvidenceEntry | undefined {
   return DEMO_EVIDENCE.find((e) => e.key === key);

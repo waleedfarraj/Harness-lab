@@ -4,8 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { DEMO_EVIDENCE, findDemoEvidence } from "../src/lib/demo/evidence-catalog";
-import { loadDiagnosisForDemo } from "../src/lib/demo/load-diagnosis";
+import { DEFAULT_DEMO_EVIDENCE_KEY, DEMO_EVIDENCE, findDemoEvidence } from "../src/lib/demo/evidence-catalog";
+import { isEvidenceAvailable, loadDiagnosisForDemo } from "../src/lib/demo/load-diagnosis";
 import { locateEvidenceFile } from "../src/lib/demo/locate-evidence";
 import { computeTraceFindings } from "../src/lib/demo/trace-findings";
 import type { StableDiagnosisResult } from "../src/lib/diagnosis/types";
@@ -167,5 +167,30 @@ test("the replay path never imports the Token Factory client", () => {
   for (const f of files) {
     const src = fs.readFileSync(path.join(process.cwd(), f), "utf8");
     assert.doesNotMatch(src, /from\s+["'][^"']*nebius[^"']*["']/i, `${f} must not import the Nebius client`);
+  }
+});
+
+test("the default page renders from tracked evidence alone, and unavailable keys fall back instead of crashing", () => {
+  const savedEnv = process.env.HARNESSLAB_DEMO_DIAGNOSIS;
+  delete process.env.HARNESSLAB_DEMO_DIAGNOSIS;
+  try {
+    assert.equal(DEFAULT_DEMO_EVIDENCE_KEY, "applypilot");
+    // The default's evidence is tracked in git, so a fresh clone (no git-ignored .harnesslab/) can render it.
+    const entry = DEMO_EVIDENCE.find((e) => e.key === DEFAULT_DEMO_EVIDENCE_KEY)!;
+    assert.ok(isEvidenceAvailable(entry));
+    assert.match(path.relative(process.cwd(), locateEvidenceFile(entry.locate!)!), /^demo-evidence[\\/]/);
+
+    const byDefault = loadDiagnosisForDemo(undefined);
+    assert.equal(byDefault.activeKey, "applypilot");
+    assert.equal(loadDiagnosisForDemo("no-such-key").activeKey, "applypilot");
+
+    // The switcher lists only entries that can actually render here.
+    assert.ok(byDefault.catalog.length >= 1);
+    assert.ok(byDefault.catalog.every(isEvidenceAvailable));
+    for (const e of DEMO_EVIDENCE.filter((e) => !isEvidenceAvailable(e))) {
+      assert.equal(loadDiagnosisForDemo(e.key).activeKey, "applypilot", `${e.key} has no evidence here and must fall back`);
+    }
+  } finally {
+    if (savedEnv !== undefined) process.env.HARNESSLAB_DEMO_DIAGNOSIS = savedEnv;
   }
 });
