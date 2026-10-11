@@ -6,6 +6,7 @@ import { baselineSkill } from "../harness/skills/baseline-skill";
 import { verificationSkillV2 } from "../harness/skills/verification-skill-v2";
 import type { HarnessManifest } from "../harness/types";
 import { DIAGNOSES_DIR } from "../experiments/evidence";
+import { BENCHMARK_CASES } from "../benchmark/cases";
 
 /**
  * Curated pointers into real, previously recorded `.harnesslab/diagnoses/*.json`
@@ -51,15 +52,17 @@ export interface DemoEvidenceEntry {
 }
 
 /**
- * `inconclusive` is the default (see `DEFAULT_DEMO_EVIDENCE_KEY`): it is the
- * only real, live-Nebius-Sandbox, current-schema (replicated-evidence)
- * example on disk that also has 4 changed dimensions — every other 4-dim
- * real run in this schema also resolved inconclusive (see the repo's
- * `.harnesslab/diagnoses/` — none of the Milestone 7-9 discount-apply-001
- * runs against a real Token Factory Sandbox landed on main_effect/interaction
- * within budget). `main-effect` and `interaction` are real decisive
+ * `inconclusive` is the default (see `DEFAULT_DEMO_EVIDENCE_KEY`): it remains
+ * the default after the benchmark run (src/lib/benchmark/cases.ts,
+ * .harnesslab/benchmark/report.md) because neither hero candidate
+ * (interaction-discount-apply, main-effect-payment-retry) reached a decisive
+ * current-schema diagnosis — promoting a case to default requires a decisive
+ * diagnosis under the hero criteria, and none of the 5 official benchmark
+ * runs produced one. `main-effect` and `interaction` are real decisive
  * diagnoses recorded by the Milestone 6 engine (before replication/stability
  * tracking existed) — see `schemaSource: "legacy"` on their view model.
+ * `no-regression` and `interaction-attempt` are the two benchmark results
+ * that added something the switcher didn't already show.
  */
 export const DEMO_EVIDENCE: DemoEvidenceEntry[] = [
   {
@@ -75,8 +78,8 @@ export const DEMO_EVIDENCE: DemoEvidenceEntry[] = [
   },
   {
     key: "main-effect",
-    label: "Main effect",
-    description: "4 dimensions changed; the deterministic engine isolated a single responsible dimension.",
+    label: "Main effect (legacy schema)",
+    description: "4 dimensions changed; the deterministic engine isolated a single responsible dimension. Milestone 6 schema — no replicated evidence.",
     // scripts/diagnose-adaptive.ts, manifestId "diagnosis4-baseline"/"diagnosis4-candidate".
     filePath: path.join(DIAGNOSES_DIR, "f148f9b5-2ed9-46e4-b252-27092049d3e6.json"),
     taskTitle: TASK_TITLE,
@@ -86,14 +89,38 @@ export const DEMO_EVIDENCE: DemoEvidenceEntry[] = [
   },
   {
     key: "interaction",
-    label: "Interaction",
-    description: "2 dimensions changed; neither alone explains the regression, but the combination does.",
+    label: "Interaction (legacy schema)",
+    description: "2 dimensions changed; neither alone explains the regression, but the combination does. Milestone 6 schema — no replicated evidence.",
     // scripts/diagnose-smoke.ts, manifestId "diagnosis-baseline"/"diagnosis-candidate".
     filePath: path.join(DIAGNOSES_DIR, "a7051dd3-92ac-4a84-b137-f7b3365eaed7.json"),
     taskTitle: TASK_TITLE,
     taskInstruction: TASK_INSTRUCTION,
     baselineManifest: { ...baselineV1, id: "diagnosis-baseline", skills: [baselineSkill], contextPolicy: "full" },
     candidateManifest: { ...baselineV1, id: "diagnosis-candidate", skills: [verificationSkillV2], contextPolicy: "compact" },
+  },
+  // Benchmark additions (see src/lib/benchmark/cases.ts and .harnesslab/benchmark/report.md). Both are
+  // real, current-schema, live-Nebius-Sandbox results from the same official benchmark run as "inconclusive"
+  // above. Neither reached a decisive (main_effect/interaction) diagnosis — see the benchmark report for the
+  // full honest picture, including the two hero-candidate scenarios that also didn't resolve decisively.
+  {
+    key: "no-regression",
+    label: "No regression",
+    description: "1 dimension changed, candidate held up — HarnessLab correctly detects nothing broke and stops before running any diagnostic experiments.",
+    filePath: path.join(DIAGNOSES_DIR, "dc16531b-725c-4eec-aa03-986bcb68ef81.json"),
+    taskTitle: BENCHMARK_CASES.find((c) => c.id === "benign-duration-parse")!.task.title,
+    taskInstruction: BENCHMARK_CASES.find((c) => c.id === "benign-duration-parse")!.task.instruction,
+    baselineManifest: BENCHMARK_CASES.find((c) => c.id === "benign-duration-parse")!.baseline,
+    candidateManifest: BENCHMARK_CASES.find((c) => c.id === "benign-duration-parse")!.candidate,
+  },
+  {
+    key: "interaction-attempt",
+    label: "Inconclusive (unstable evidence)",
+    description: "2 dimensions changed, a real regression reproduced, but one configuration's repeated runs genuinely disagreed with each other — not merely a budget shortfall, true run-to-run instability.",
+    filePath: path.join(DIAGNOSES_DIR, "106ca73e-3d72-4452-9d85-2a554e310038.json"),
+    taskTitle: BENCHMARK_CASES.find((c) => c.id === "interaction-discount-apply")!.task.title,
+    taskInstruction: BENCHMARK_CASES.find((c) => c.id === "interaction-discount-apply")!.task.instruction,
+    baselineManifest: BENCHMARK_CASES.find((c) => c.id === "interaction-discount-apply")!.baseline,
+    candidateManifest: BENCHMARK_CASES.find((c) => c.id === "interaction-discount-apply")!.candidate,
   },
 ];
 
