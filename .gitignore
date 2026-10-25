@@ -29,3 +29,10 @@ __pycache__/
 .env.*
 !.env.example
 .vercel
+
+# Submission media (narration, screen recordings) stay local; upload to YouTube instead.
+/submission/*.webm
+/submission/*.mp4
+/submission/*.m4a
+/submission/*.mov
+/submission/*.wav

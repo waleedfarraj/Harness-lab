@@ -1,12 +1,27 @@
 # HarnessLab
 
-**Find which harness change broke your coding agent.**
+**Find what broke your coding agent — and know when the evidence isn't strong enough to know.**
 
 When a coding agent regresses after several harness changes at once (system prompt, skills, context policy, turn budget, model), it is hard to tell which change was responsible. HarnessLab runs controlled, replicated experiments over those changes and attributes the regression to a single dimension or to an interaction between dimensions, with the evidence behind the call.
+
+HarnessLab does **not** always identify a root cause. Coding agents are stochastic, so it repeats important experiments, tracks stability, and reports **INCONCLUSIVE** when the evidence cannot support a unique diagnosis. That outcome is a feature, not an error.
 
 Built for the Nebius x NVIDIA Global AI Hackathon 2026, Coding & Agentic Engineering track. MIT licensed.
 
 **Live demo (read-only replay of saved evidence): https://harnesslab-sooty.vercel.app**. The hosted site makes no API calls and has no live agent execution; to run experiments, use the commands below.
+
+## The problem
+
+A coding agent's behavior depends on its *harness*: system prompt, skills, context policy, turn budget, model. Teams change several at once, performance drops, and it is unclear which change (or which combination) is responsible. Re-running by hand is slow, noisy and expensive.
+
+## Core concepts
+
+- **Baseline vs. candidate harness.** Two versioned harness manifests that differ in one or more dimensions, run on the same task fixture with the same hidden evaluator.
+- **Controlled experiments.** Each experiment changes a chosen subset of dimensions back to their baseline or candidate values and runs the agent in an isolated workspace (a fork of a shared prepared checkpoint when using Token Factory Sandboxes). The evaluator runs build, public tests and hidden tests deterministically.
+- **Adaptive diagnosis.** With *n* changed dimensions there are 2^n configurations. A deterministic planner picks the next experiment that best separates the remaining hypotheses (main effect of one dimension, or an interaction of several) instead of brute-forcing all of them. The page shows how many configurations were run and how many were avoided.
+- **Replicated, stability-aware evidence.** Decision-critical configurations are repeated. A configuration whose runs disagree (for example PASS, FAIL, PASS) is labeled unstable, and unstable evidence cannot produce a confident verdict.
+- **Honest INCONCLUSIVE.** If more than one hypothesis remains consistent with the evidence within budget, the diagnosis says so.
+- **Evidence schemas.** Older saved examples (shown in the page's evidence switcher as "legacy schema") used a **single-run** schema, with no replication or stability tracking. A "legacy" decisive result is a historical single-run example, not current replicated evidence. Current-schema runs are replicated and may well be inconclusive.
 
 ## What it does
 
@@ -58,7 +73,7 @@ npm run diagnose:applypilot    # at most 10 real coding-agent runs + 1 Nemotron 
 
 It writes `.harnesslab/diagnoses/<id>.json` (git-ignored). The replay finds the best matching evidence by content, so a fresh run is picked up automatically; to keep it in the repo, run `npm run demo:freeze -- applypilot` (it refuses to overwrite a different existing snapshot). Results are stochastic. HarnessLab reports "no regression" or "inconclusive" when that is what the runs show.
 
-Other experiments: `experiment:smoke`, `experiment:compare`, `experiment:interaction`, `experiment:skill-context`, `diagnose:stable`, `benchmark-run.ts` (see `package.json` and `scripts/`). Runner selection: `HARNESSLAB_RUNNER=local` (default) or `token-factory` (Token Factory Sandboxes; needs `NEBIUS_PROJECT_ID` and `pip install -r requirements-sandbox.txt`). There is no silent fallback between them.
+Other experiments: `experiment:smoke`, `experiment:compare`, `experiment:interaction`, `experiment:skill-context`, `diagnose:stable` (npm scripts, see `package.json`), and the benchmark runner `scripts/benchmark-run.ts` (no npm alias: `node --conditions=react-server --env-file=.env.local --import tsx scripts/benchmark-run.ts --case=<id>`). Runner selection: `HARNESSLAB_RUNNER=local` (default) or `token-factory` (Token Factory Sandboxes; needs `NEBIUS_PROJECT_ID` and `pip install -r requirements-sandbox.txt`). There is no silent fallback between them.
 
 ## How NVIDIA Nemotron and Nebius Token Factory are used
 
@@ -66,6 +81,40 @@ Other experiments: `experiment:smoke`, `experiment:compare`, `experiment:interac
 - **Nemotron writes the mechanism explanation.** One call per diagnosis, grounded in the recorded traces (`src/lib/diagnosis/explain-stable.ts`). The attribution itself is deterministic code, so the verdict doesn't depend on model prose.
 - **Token Factory made repeated experiments affordable.** Attribution needs many replicated runs of the same task. Token Factory inference, and Token Factory Sandboxes for the runs that used them, are what make a 6 to 10 run diagnosis practical.
 - The replay page does not call the API. The live path above does.
+
+## Architecture
+
+```
+harness manifests (baseline, candidate)  ->  factorial design (2^n configurations)
+        |                                              |
+        v                                              v
+  coding agent loop (Nemotron via Token Factory)   deterministic planner (explore / confirm)
+        |                                              |
+        v                                              v
+  runner: local temp workspace  or  Token Factory Sandbox fork  ->  hidden deterministic evaluator
+        |
+        v
+  replication + stability tracking  ->  attribution (main effect / interaction / inconclusive)
+        |
+        v
+  Nemotron mechanism explanation (audited against traces)  ->  evidence JSON  ->  Next.js page
+```
+
+## Environment variables
+
+Set in `.env.local` (git-ignored; copy from `.env.example`). Values are never committed.
+
+| Variable | Needed for | Notes |
+| --- | --- | --- |
+| `NEBIUS_API_KEY` | live experiments | Token Factory API key. Server-side only. |
+| `NEBIUS_BASE_URL` | optional | OpenAI-compatible endpoint; has a default. |
+| `NEBIUS_MODEL` | optional | Defaults to `nvidia/nemotron-3-super-120b-a12b`. |
+| `NEBIUS_TIMEOUT_MS` | optional | Request timeout. |
+| `NEBIUS_PROJECT_ID` | `HARNESSLAB_RUNNER=token-factory` | Token Factory Sandboxes project. |
+| `HARNESSLAB_RUNNER` | optional | `local` (default) or `token-factory`. |
+| `HARNESSLAB_ENABLE_DEV_ROUTES` | optional | Enables credit-spending dev routes. Never set on a public deployment. |
+
+The replay (`npm run demo:replay`) needs none of these.
 
 ## Layout
 
@@ -104,8 +153,11 @@ npm run check:secrets  # after build: scans the client bundle for the key
 - Small samples: 2 to 3 runs per configuration, one task per scenario.
 - Attribution covers the five harness dimensions in `src/lib/harness/types.ts`. Coding-agent tasks only.
 - Raw model request bodies are not stored. What the model saw is reconstructed from recorded compaction metadata and the code that applies it.
+- The ApplyPilot replay is a recorded run on the local runner; its page header still labels the runner as Token Factory Sandbox. The Sandbox evidence panel and this README are the accurate description. The other evidence examples in the switcher were run in Token Factory Sandboxes.
+- The hidden evaluator tests live in `fixtures/*/hidden/` in this repo. They are kept out of the agent's workspace at run time (see the anti-leakage test), but anyone reading the repo can read them.
+- The benchmark scenarios in `/benchmarks` all ended INCONCLUSIVE with low evidence quality (none produced a decisive diagnosis); one controlled seeded regression did not qualify. They are reported as-is and make no statistical-significance claim.
 - Results come from a stochastic model; reruns can differ, and an unstable baseline is reported as such, not forced into a verdict.
 
 ## License
 
-MIT. See `LICENSE`. `fixtures/duration-parse` is modeled on the documented behavior of the `ms` package; see its `THIRD_PARTY_NOTICES.md`.
+MIT. See `LICENSE`. `fixtures/duration-parse` is modeled on the documented behavior of the `ms` package (no source copied); see `THIRD_PARTY_NOTICES.md`.
